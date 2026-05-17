@@ -12,6 +12,7 @@ from ...uow import AsyncSQLAlchemyUnitOfWork, AsyncUowTransaction, IsolationLeve
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span, Tracer
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,34 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
             attributes=attributes,
         ) as tx:
             yield tx
+
+    @asynccontextmanager
+    async def managed_session(
+        self,
+        isolation_level: IsolationLevel | str | None = None,
+    ) -> AsyncIterator[tuple[T, AsyncSession]]:
+        """Create a session with manual transaction control and tracing.
+
+        Automatically creates a span named "uow.managed_session" with attributes:
+        - db.operation: "managed_session"
+        - db.isolation_level: The isolation level (if specified)
+
+        Args:
+            isolation_level: Optional transaction isolation level.
+
+        Yields:
+            Tuple of (transaction object, session) for manual control.
+        """
+        attributes = {}
+        if isolation_level:
+            attributes["db.isolation_level"] = str(isolation_level)
+
+        async with self._traced(
+            operation="managed_session",
+            context_manager=super().managed_session(isolation_level=isolation_level),
+            attributes=attributes,
+        ) as result:
+            yield result
 
     @asynccontextmanager
     async def query(

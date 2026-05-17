@@ -234,6 +234,10 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
         for complex transactional logic where commit decision depends on multiple
         conditions or external factors.
 
+        A transaction is started automatically, but you have full control over
+        when to commit or rollback. If you exit without calling either, SQLAlchemy
+        will automatically rollback on session close.
+
         Args:
             isolation_level: Optional transaction isolation level.
                 Can be an IsolationLevel enum member or a string value.
@@ -268,16 +272,35 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
                     else:
                         await session.rollback()
 
-        Note:
-            The session.begin() is called automatically, but you must handle
-            commit/rollback manually. If you exit the context without calling
-            either, SQLAlchemy will automatically rollback.
+            Multiple operations with intermediate decision:
+                async with uow.managed_session() as (tx, session):
+                    user = await tx.users.create(...)
+
+                    # First checkpoint
+                    await session.flush()
+
+                    # More operations
+                    await tx.profiles.create(user_id=user.id)
+
+                    # Final decision
+                    await session.commit()
+
+        Warning:
+            You MUST explicitly call session.commit() or session.rollback().
+            Exiting the context without calling either will result in automatic
+            rollback when the session closes.
         """
         async with self.open_session(isolation_level) as session:
-            async with session.begin():
+            # Start transaction WITHOUT context manager - no auto-commit
+            await session.begin()
+            try:
                 uow = self._transaction_factory(session)
                 yield uow, session
-                # No auto-commit - user must call session.commit() or session.rollback()
+            except Exception:
+                # Auto-rollback on exception
+                await session.rollback()
+                raise
+            # User must call session.commit() or session.rollback() explicitly
 
     @asynccontextmanager
     async def query(
