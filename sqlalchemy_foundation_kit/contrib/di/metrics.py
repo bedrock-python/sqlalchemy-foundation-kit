@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ...protocols import PostgresMetricsProtocol
-from ._deps import Provider, Scope, check_dishka, provide
+from ._base import BaseDishkaProvider
+from ._deps import Scope, provide
 
 
 @runtime_checkable
@@ -33,13 +34,8 @@ class PostgresMetricsSettingsProtocol(Protocol):
         ...
 
 
-class BaseMetricsProvider(Provider):
+class BaseMetricsProvider(BaseDishkaProvider):
     """Base provider for metrics with helper for optional infra name prefix."""
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Check dependencies when subclassing."""
-        super().__init_subclass__(**kwargs)
-        check_dishka()
 
     scope = Scope.APP
 

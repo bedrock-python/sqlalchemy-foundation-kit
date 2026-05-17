@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import PoolConfig, PostgresSettingsProtocol
+from ..config import PostgresSettingsProtocol
 from .connection import AsyncCConnection
 from .manager import AsyncSessionManager
 
@@ -73,34 +73,22 @@ def create_async_session_manager(
     """
     app_name = application_name or postgres_config.application_name
 
-    server_settings: dict[str, str] = {"application_name": app_name}
+    # Build server settings with optional overrides
+    server_settings: dict[str, str] = {
+        "application_name": app_name,
+        **({"jit": postgres_config.jit} if postgres_config.jit is not None else {}),
+        **({"search_path": postgres_config.db_schema} if postgres_config.db_schema is not None else {}),
+        **(extra_server_settings or {}),
+    }
 
-    if postgres_config.jit is not None:
-        server_settings["jit"] = postgres_config.jit
-
-    if postgres_config.db_schema is not None:
-        server_settings["search_path"] = postgres_config.db_schema
-
-    if extra_server_settings:
-        server_settings.update(extra_server_settings)
-
+    # Build connect args with optional overrides
     connect_args: dict[str, object] = {
         "server_settings": server_settings,
         "statement_cache_size": postgres_config.query.statement_cache_size,
         "prepared_statement_cache_size": postgres_config.query.prepared_statement_cache_size,
         "connection_class": connection_class or AsyncCConnection,
+        **(extra_connect_args or {}),
     }
-
-    if extra_connect_args:
-        connect_args.update(extra_connect_args)
-
-    pool_config = PoolConfig(
-        size=postgres_config.pool.size,
-        max_overflow=postgres_config.pool.max_overflow,
-        pre_ping=postgres_config.pool.pre_ping,
-        recycle=postgres_config.pool.recycle,
-        timeout=postgres_config.pool.timeout,
-    )
 
     return AsyncSessionManager(
         url=postgres_config.to_dsn(),
@@ -108,7 +96,7 @@ def create_async_session_manager(
         poolclass=postgres_config.pool.kind,
         connect_args=connect_args,
         isolation_level=postgres_config.query.isolation_level,
-        pool_config=pool_config,
+        pool_settings=postgres_config.pool,
         use_orjson=postgres_config.use_orjson_serialization,
         metrics=metrics,
         on_engine_created=on_engine_created,

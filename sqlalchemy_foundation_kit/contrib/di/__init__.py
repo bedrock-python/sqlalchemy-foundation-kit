@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+from ._base import BaseDishkaProvider
 from .database import (
     AsyncDatabaseProvider,
     AsyncUnitOfWorkProvider,
     retry_async_connection,
-    safe_async_cleanup,
 )
 from .metrics import PrometheusPostgresMetricsProvider
 
 __all__ = [
     "AsyncDatabaseProvider",
     "AsyncUnitOfWorkProvider",
+    "BaseDishkaProvider",
     "PrometheusPostgresMetricsProvider",
     "retry_async_connection",
-    "safe_async_cleanup",
 ]

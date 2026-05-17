@@ -4,33 +4,10 @@ from __future__ import annotations
 
 import decimal
 import logging
-from typing import Any
+
+from ._optional import require_optional
 
 logger = logging.getLogger(__name__)
-
-
-def _ensure_orjson_available() -> Any:
-    """Ensure orjson is installed and return the module.
-
-    Returns:
-        The orjson module.
-
-    Raises:
-        ImportError: If orjson is not installed.
-
-    Examples:
-        >>> orjson = _ensure_orjson_available()
-        >>> hasattr(orjson, 'dumps')
-        True
-    """
-    try:
-        import orjson  # noqa: PLC0415
-    except ImportError as e:
-        raise ImportError(
-            "orjson is required for JSON serialization. Install with: pip install sqlalchemy-foundation-kit[orjson]"
-        ) from e
-    else:
-        return orjson
 
 
 def _default_json_encoder(obj: object) -> str:
@@ -80,7 +57,7 @@ def _json_serializer(obj: object) -> str:
         >>> _json_serializer({"key": "value"})
         '{"key":"value"}'
     """
-    orjson = _ensure_orjson_available()
+    orjson = require_optional("orjson", "json")
 
     try:
         return orjson.dumps(obj, default=_default_json_encoder).decode("utf-8")  # type: ignore[no-any-return]
@@ -105,7 +82,7 @@ def configure_orjson_serialization() -> dict[str, object]:
         >>> "json_deserializer" in config
         True
     """
-    orjson = _ensure_orjson_available()
+    orjson = require_optional("orjson", "json")
 
     return {
         "json_serializer": _json_serializer,

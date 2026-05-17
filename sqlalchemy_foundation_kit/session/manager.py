@@ -14,9 +14,9 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from ..base import build_engine_kwargs, resolve_pool_class
-from ..config import PoolConfig
 
 if TYPE_CHECKING:
+    from ..config import PoolSettingsProtocol
     from ..protocols import PostgresMetricsProtocol
 
 logger = logging.getLogger(__name__)
@@ -24,91 +24,57 @@ logger = logging.getLogger(__name__)
 DISPOSE_TIMEOUT_SECONDS = 30.0
 
 
-class SessionMetricsSetup:
-    """Handles metrics setup for SQLAlchemy session manager.
+def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> None:
+    """Attach metrics event listeners to SQLAlchemy engine.
 
-    Encapsulates all metrics-related event listener configuration,
-    separating metrics concerns from session management logic.
+    Registers event handlers for connection checkout, checkin, and error events
+    to collect pool statistics and connection metrics.
+
+    Args:
+        engine: SQLAlchemy AsyncEngine to attach listeners to.
+        metrics: Metrics collector implementing PostgresMetricsProtocol.
     """
+    pool = engine.pool
 
-    def __init__(self, engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> None:
-        """Initialize metrics setup.
-
-        Args:
-            engine: SQLAlchemy AsyncEngine to attach listeners to.
-            metrics: Metrics collector implementing PostgresMetricsProtocol.
-        """
-        self._engine = engine
-        self._metrics = metrics
-
-    def setup(self) -> None:
-        """Setup all metrics event listeners."""
-        pool = self._engine.pool
-
-        event.listen(pool, "checkout", self._create_checkout_handler())
-        event.listen(pool, "checkin", self._create_checkin_handler())
-        event.listen(self._engine.sync_engine, "handle_error", self._create_error_handler())
-
-    def _create_checkout_handler(self) -> Any:
-        """Create checkout event handler.
-
-        Returns:
-            Event handler function for connection checkout events.
-        """
-
-        def on_checkout(dbapi_connection: Any, connection_record: Any, connection_proxy: Any) -> None:
-            self._record_pool_stats()
-            connection_record.info["checkout_start"] = time.perf_counter()
-
-        return on_checkout
-
-    def _create_checkin_handler(self) -> Any:
-        """Create checkin event handler.
-
-        Returns:
-            Event handler function for connection checkin events.
-        """
-
-        def on_checkin(dbapi_connection: Any, connection_record: Any) -> None:
-            self._record_pool_stats()
-
-            if "checkout_start" in connection_record.info:
-                duration = time.perf_counter() - connection_record.info["checkout_start"]
-                try:
-                    self._metrics.record_checkout(duration=duration)
-                except Exception:
-                    logger.exception("Failed to record database checkout metrics")
-
-        return on_checkin
-
-    def _create_error_handler(self) -> Any:
-        """Create error event handler.
-
-        Returns:
-            Event handler function for database error events.
-        """
-
-        def on_error(exception_context: Any) -> None:
-            error_type = type(exception_context.original_exception).__name__
-            is_timeout = "timeout" in str(exception_context.original_exception).lower()
-            try:
-                self._metrics.record_error(error_type=error_type, is_timeout=is_timeout)
-            except Exception:
-                logger.exception("Failed to record database error metrics")
-
-        return on_error
-
-    def _record_pool_stats(self) -> None:
+    def record_pool_stats() -> None:
         """Record current pool statistics."""
-        pool = self._engine.pool
         try:
-            self._metrics.record_pool_stats(
+            metrics.record_pool_stats(
                 pool_size=pool.size() if hasattr(pool, "size") else 0,
                 pool_checked_out=pool.checkedout() if hasattr(pool, "checkedout") else 0,
                 pool_overflow=pool.overflow() if hasattr(pool, "overflow") else 0,
             )
         except Exception:
             logger.exception("Failed to record database pool metrics")
+
+    def on_checkout(dbapi_connection: Any, connection_record: Any, connection_proxy: Any) -> None:
+        """Handle connection checkout event."""
+        record_pool_stats()
+        connection_record.info["checkout_start"] = time.perf_counter()
+
+    def on_checkin(dbapi_connection: Any, connection_record: Any) -> None:
+        """Handle connection checkin event."""
+        record_pool_stats()
+
+        if "checkout_start" in connection_record.info:
+            duration = time.perf_counter() - connection_record.info["checkout_start"]
+            try:
+                metrics.record_checkout(duration=duration)
+            except Exception:
+                logger.exception("Failed to record database checkout metrics")
+
+    def on_error(exception_context: Any) -> None:
+        """Handle database error event."""
+        error_type = type(exception_context.original_exception).__name__
+        is_timeout = "timeout" in str(exception_context.original_exception).lower()
+        try:
+            metrics.record_error(error_type=error_type, is_timeout=is_timeout)
+        except Exception:
+            logger.exception("Failed to record database error metrics")
+
+    event.listen(pool, "checkout", on_checkout)
+    event.listen(pool, "checkin", on_checkin)
+    event.listen(engine.sync_engine, "handle_error", on_error)
 
 
 class AsyncSessionManager[SessionT: AsyncSession]:
@@ -124,7 +90,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
         expire_on_commit: bool = False,
         connect_args: dict[str, object] | None = None,
         isolation_level: str | None = None,
-        pool_config: PoolConfig | None = None,
+        pool_settings: PoolSettingsProtocol | None = None,
         use_orjson: bool = False,
         metrics: PostgresMetricsProtocol | None = None,
         on_engine_created: Callable[[AsyncEngine], None] | None = None,
@@ -141,7 +107,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
         expire_on_commit: bool = False,
         connect_args: dict[str, object] | None = None,
         isolation_level: str | None = None,
-        pool_config: PoolConfig | None = None,
+        pool_settings: PoolSettingsProtocol | None = None,
         use_orjson: bool = False,
         metrics: PostgresMetricsProtocol | None = None,
         on_engine_created: Callable[[AsyncEngine], None] | None = None,
@@ -157,7 +123,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
         expire_on_commit: bool = False,
         connect_args: dict[str, object] | None = None,
         isolation_level: str | None = None,
-        pool_config: PoolConfig | None = None,
+        pool_settings: PoolSettingsProtocol | None = None,
         use_orjson: bool = False,
         metrics: PostgresMetricsProtocol | None = None,
         on_engine_created: Callable[[AsyncEngine], None] | None = None,
@@ -173,7 +139,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
             expire_on_commit: If True, objects expire after commit.
             connect_args: Arguments passed to the database driver.
             isolation_level: Default transaction isolation level.
-            pool_config: Pool configuration settings.
+            pool_settings: Pool configuration settings (validated by caller, e.g., Pydantic).
             use_orjson: If True, use orjson for JSON serialization.
             metrics: Optional metrics collector.
             on_engine_created: Optional callback invoked with the AsyncEngine right
@@ -188,7 +154,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
             echo=echo,
             poolclass=resolved_poolclass,
             isolation_level=isolation_level,
-            pool_config=pool_config,
+            pool_settings=pool_settings,
             connect_args=connect_args,
             extra_kwargs=kwargs,
             use_orjson=use_orjson,
@@ -205,8 +171,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
         )
 
         if metrics:
-            metrics_setup = SessionMetricsSetup(self._engine, metrics)
-            metrics_setup.setup()
+            attach_metrics(self._engine, metrics)
 
         if on_engine_created is not None:
             on_engine_created(self._engine)

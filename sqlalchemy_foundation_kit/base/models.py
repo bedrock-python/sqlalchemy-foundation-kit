@@ -67,10 +67,34 @@ class DatetimeColumnsMixin:
         )
 
 
+def _extract_enum_values(enum_obj: Any) -> list[Any] | Any:
+    """Extract values from Python enum or return the object as-is.
+
+    Args:
+        enum_obj: Either a Python Enum class with __members__ or a list of values.
+
+    Returns:
+        List of enum values (extracting .value attribute if available) or the input object.
+
+    Examples:
+        >>> from enum import Enum
+        >>> class Color(Enum):
+        ...     RED = "red"
+        ...     BLUE = "blue"
+        >>> _extract_enum_values(Color)
+        ["red", "blue"]
+        >>> _extract_enum_values(["red", "blue"])
+        ["red", "blue"]
+    """
+    if hasattr(enum_obj, "__members__"):
+        return [getattr(item, "value", item) for item in enum_obj]
+    return enum_obj
+
+
 UnConstrainedEnum = partial(
     Enum,
     native_enum=False,
     create_constraint=False,
     validate_strings=True,
-    values_callable=lambda obj: [getattr(item, "value", item) for item in obj] if hasattr(obj, "__members__") else obj,
+    values_callable=_extract_enum_values,
 )

@@ -65,10 +65,37 @@ class AsyncSQLAlchemyUowTransaction(AsyncUowTransaction):
         """Get the underlying SQLAlchemy async session."""
         return self._session
 
+
+class PostgresAdvisoryLockMixin:
+    """Mixin providing PostgreSQL advisory lock support for UoW transactions.
+
+    Requires the class to have a `session` property returning AsyncSession.
+
+    Example:
+        class IdentityTransaction(AsyncSQLAlchemyUowTransaction, PostgresAdvisoryLockMixin):
+            @property
+            def users(self) -> UserRepository:
+                return PostgresUserRepository(self.session)
+
+        # Now has access to try_advisory_lock method
+        async with uow.transaction() as tx:
+            if await tx.try_advisory_lock(12345):
+                # Protected operation
+                ...
+    """
+
+    session: AsyncSession  # Type annotation for protocol compliance
+
     async def try_advisory_lock(self, key: int) -> bool:
         """Acquire a Postgres transaction-scoped advisory lock.
 
         Delegates to :func:`try_advisory_xact_lock` for actual locking logic.
+
+        Args:
+            key: Integer lock key.
+
+        Returns:
+            True if lock was acquired, False if already held by another session.
         """
         return await try_advisory_xact_lock(self.session, key)
 
@@ -157,9 +184,11 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
         self,
         isolation_level: IsolationLevel | str | None = None,
         flush_before_commit: bool | None = None,
-        auto_commit: bool = True,
     ) -> AsyncIterator[T]:
-        """Create a new transaction context.
+        """Create a new transaction context with automatic commit/rollback.
+
+        The Unit of Work automatically commits the transaction on successful exit
+        and rolls back on exception. This ensures atomic operations.
 
         Args:
             isolation_level: Optional transaction isolation level.
@@ -168,54 +197,87 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
             flush_before_commit: If True, flush the session before commit to surface
                 constraint violations while still inside the transaction. If ``None`` (default),
                 falls back to the value passed to the constructor (``True`` unless overridden).
-                Only applies when auto_commit is True.
-            auto_commit: If True, automatically commit on successful exit or rollback on exception.
-                If False, transaction must be committed/rolled back manually via session.commit()/rollback().
-                Default True.
 
         Raises:
             ValueError: If isolation_level is not supported.
 
         Examples:
-            Auto-commit (default):
+            Write operation with automatic commit:
                 async with uow.transaction() as tx:
                     await tx.users.create(...)
-                    # Auto-commit on exit
-
-            Manual commit:
-                async with uow.transaction(auto_commit=False) as tx:
-                    await tx.users.create(...)
-                    await tx.session.commit()  # Manual commit
+                    # Auto-commit on exit, rollback on exception
         """
         if flush_before_commit is None:
             flush_before_commit = self._flush_before_commit
 
-        async with self.open_session(isolation_level) as session:
-            if auto_commit:
-                # Auto-commit mode: use session.begin() context manager
-                async with session.begin():
-                    uow = self._transaction_factory(session)
-                    yield uow
-                    if flush_before_commit:
-                        # Flush changes before commit to catch constraint violations early
-                        # while still inside the transaction context.
-                        try:
-                            await session.flush()
-                        except SQLAlchemyError as e:
-                            logger.warning("Database flush failed", extra={"error": str(e)})
-                            raise
-            else:
-                # Manual mode: start transaction but don't auto-commit
-                # User must call session.commit() or session.rollback() manually
-                await session.begin()
+        async with self.open_session(isolation_level) as session, session.begin():
+            uow = self._transaction_factory(session)
+            yield uow
+            if flush_before_commit:
+                # Flush changes before commit to catch constraint violations early
+                # while still inside the transaction context.
                 try:
-                    uow = self._transaction_factory(session)
-                    yield uow
-                except Exception:
-                    # On exception, rollback and re-raise
-                    await session.rollback()
+                    await session.flush()
+                except SQLAlchemyError as e:
+                    logger.warning("Database flush failed", extra={"error": str(e)})
                     raise
-                # Note: No auto-commit here - user must commit manually
+
+    @asynccontextmanager
+    async def managed_session(
+        self,
+        isolation_level: IsolationLevel | str | None = None,
+    ) -> AsyncIterator[tuple[T, AsyncSession]]:
+        """Create a session with manual transaction control.
+
+        Unlike transaction(), this does NOT auto-commit. The caller must
+        explicitly call session.commit() or session.rollback(). This is useful
+        for complex transactional logic where commit decision depends on multiple
+        conditions or external factors.
+
+        Args:
+            isolation_level: Optional transaction isolation level.
+                Can be an IsolationLevel enum member or a string value.
+                Supported values: "READ_COMMITTED", "REPEATABLE_READ", "SERIALIZABLE", "READ_UNCOMMITTED".
+
+        Yields:
+            Tuple of (transaction object, session) for manual control.
+
+        Raises:
+            ValueError: If isolation_level is not supported.
+
+        Examples:
+            Manual transaction control:
+                async with uow.managed_session() as (tx, session):
+                    await tx.users.create(...)
+
+                    # Manually decide when to commit
+                    if should_commit:
+                        await session.commit()
+                    else:
+                        await session.rollback()
+
+            Conditional commit based on external service:
+                async with uow.managed_session() as (tx, session):
+                    user = await tx.users.create(...)
+
+                    # Call external service
+                    result = await external_api.validate(user)
+
+                    if result.success:
+                        await session.commit()
+                    else:
+                        await session.rollback()
+
+        Note:
+            The session.begin() is called automatically, but you must handle
+            commit/rollback manually. If you exit the context without calling
+            either, SQLAlchemy will automatically rollback.
+        """
+        async with self.open_session(isolation_level) as session:
+            async with session.begin():
+                uow = self._transaction_factory(session)
+                yield uow, session
+                # No auto-commit - user must call session.commit() or session.rollback()
 
     @asynccontextmanager
     async def query(
@@ -225,7 +287,7 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
         """Create a read-only query context without transaction management.
 
         This method is designed for read-only operations and does not start a transaction
-        or perform any commit/rollback. It's semantically clearer than transaction(auto_commit=False)
+        or perform any commit/rollback. It's semantically clearer than managed_session()
         for read operations.
 
         Args:

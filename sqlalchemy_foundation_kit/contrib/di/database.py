@@ -14,13 +14,15 @@ from ...config import PostgresSettingsProtocol
 from ...protocols import PostgresMetricsProtocol
 from ...session import AsyncSessionManager, create_async_session_manager
 from ...uow import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction, AsyncUnitOfWork
-from ._deps import Provider, Scope, check_dishka, provide
+from ._base import BaseDishkaProvider
+from ._deps import Scope, provide
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEALTHCHECK_QUERY = "SELECT 1"
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
+DEFAULT_MAX_BACKOFF_DELAY = 60.0  # Cap exponential backoff at 60 seconds
 
 
 async def retry_async_connection(
@@ -28,6 +30,7 @@ async def retry_async_connection(
     service_name: str,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_delay: float = DEFAULT_RETRY_DELAY,
+    max_backoff_delay: float = DEFAULT_MAX_BACKOFF_DELAY,
 ) -> None:
     """Retry an async connection callable with exponential backoff.
 
@@ -35,7 +38,10 @@ async def retry_async_connection(
         connect_func: Callable that attempts to establish/test the connection.
         service_name: Human-readable service name used in log messages.
         max_retries: Maximum number of attempts before giving up.
-        retry_delay: Base delay in seconds; actual delay is ``retry_delay * 2 ** attempt``.
+        retry_delay: Base delay in seconds; actual delay is ``retry_delay * 2 ** attempt``,
+            capped at ``max_backoff_delay``.
+        max_backoff_delay: Maximum delay between retries in seconds (default: 60.0).
+            Prevents exponential backoff from growing indefinitely.
 
     Raises:
         Exception: Re-raises the last exception when all attempts fail.
@@ -48,26 +54,14 @@ async def retry_async_connection(
                 logger.exception("%s connection failed after %d attempts", service_name, max_retries)
                 raise
             logger.warning("%s connection attempt %d failed, retrying...", service_name, attempt + 1)
-            await asyncio.sleep(retry_delay * (2**attempt))
+            delay = min(retry_delay * (2**attempt), max_backoff_delay)
+            await asyncio.sleep(delay)
         else:
             logger.info("%s connection successful", service_name)
             return
 
 
-async def safe_async_cleanup(
-    cleanup_func: Callable[[], Awaitable[None]],
-    service_name: str,
-    exception_type: type[BaseException] = Exception,
-) -> None:
-    """Run an async cleanup callable, logging instead of raising on failure."""
-    try:
-        await cleanup_func()
-        logger.info("%s closed successfully", service_name)
-    except exception_type as e:
-        logger.warning("Error closing %s: %s", service_name, e)
-
-
-class AsyncDatabaseProvider(Provider):
+class AsyncDatabaseProvider(BaseDishkaProvider):
     """Provider for database dependencies.
 
     Provides:
@@ -97,11 +91,6 @@ class AsyncDatabaseProvider(Provider):
         >>> provider = AsyncDatabaseProvider(healthcheck_query=None)
     """
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Check dependencies when subclassing."""
-        super().__init_subclass__(**kwargs)
-        check_dishka()
-
     scope = Scope.APP
 
     def __init__(
@@ -119,7 +108,6 @@ class AsyncDatabaseProvider(Provider):
             retry_delay: Base delay between healthcheck retries (exponential backoff).
         """
         super().__init__()
-        check_dishka()
         self._healthcheck_query = healthcheck_query
         self._max_retries = max_retries
         self._retry_delay = retry_delay
@@ -170,11 +158,11 @@ class AsyncDatabaseProvider(Provider):
         try:
             yield manager
         finally:
-            await safe_async_cleanup(
-                cleanup_func=manager.aclose,
-                service_name="database session manager",
-                exception_type=SQLAlchemyError,
-            )
+            try:
+                await manager.aclose()
+                logger.info("Database session manager closed successfully")
+            except SQLAlchemyError as e:
+                logger.warning("Error closing database session manager: %s", e)
 
     @provide
     def get_session_maker(self, session_manager: AsyncSessionManager[AsyncSession]) -> async_sessionmaker[AsyncSession]:
@@ -182,7 +170,7 @@ class AsyncDatabaseProvider(Provider):
         return session_manager.session_maker  # type: ignore[no-any-return]
 
 
-class AsyncUnitOfWorkProvider(Provider):
+class AsyncUnitOfWorkProvider(BaseDishkaProvider):
     """Provider for Unit of Work.
 
     Provides:
@@ -196,11 +184,6 @@ class AsyncUnitOfWorkProvider(Provider):
         Override :meth:`build_uow` to use a custom transaction class
         (e.g., one that exposes domain repositories as lazy properties).
     """
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Check dependencies when subclassing."""
-        super().__init_subclass__(**kwargs)
-        check_dishka()
 
     scope = Scope.APP
 
@@ -228,5 +211,4 @@ __all__ = [
     "AsyncDatabaseProvider",
     "AsyncUnitOfWorkProvider",
     "retry_async_connection",
-    "safe_async_cleanup",
 ]

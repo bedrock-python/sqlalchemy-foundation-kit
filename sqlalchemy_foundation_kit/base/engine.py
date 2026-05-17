@@ -14,7 +14,7 @@ from sqlalchemy.pool import (
 )
 
 if TYPE_CHECKING:
-    from ..config import PoolConfig
+    from ..config import PoolSettingsProtocol
 
 PoolClassStr = Literal[
     "null", "queue", "singleton_thread", "async_adapted_queue", "fallback_async_adapted_queue", "static"
@@ -28,29 +28,6 @@ _POOL_CLASSES: dict[str, type] = {
     "fallback_async_adapted_queue": FallbackAsyncAdaptedQueuePool,
     "static": StaticPool,
 }
-
-_UNPOOLED_CLASSES: set[type] = {NullPool, StaticPool, SingletonThreadPool}
-
-
-def register_pool_class(name: str, pool_class: type, *, unpooled: bool = False) -> None:
-    """Register a custom pool class under a string name.
-
-    Enables extension with custom pool implementations without modifying the library.
-
-    Args:
-        name: String identifier (case-insensitive).
-        pool_class: Pool class to register.
-        unpooled: If True, treat as unpooled (no pool_size/overflow applied).
-
-    Examples:
-        >>> from sqlalchemy.pool import QueuePool
-        >>> register_pool_class("my_queue", QueuePool)
-        >>> resolve_pool_class("my_queue")
-        <class 'sqlalchemy.pool.QueuePool'>
-    """
-    _POOL_CLASSES[name.lower()] = pool_class
-    if unpooled:
-        _UNPOOLED_CLASSES.add(pool_class)
 
 
 def resolve_pool_class(poolclass: PoolClassStr | str | type) -> type:
@@ -85,18 +62,18 @@ def build_engine_kwargs(
     echo: bool,
     poolclass: type,
     isolation_level: str | None,
-    pool_config: PoolConfig | None,
+    pool_settings: PoolSettingsProtocol | None,
     connect_args: dict[str, object] | None,
     extra_kwargs: dict[str, object],
     use_orjson: bool = False,
 ) -> dict[str, object]:
-    """Build SQLAlchemy engine keyword arguments with validation.
+    """Build SQLAlchemy engine keyword arguments.
 
     Args:
         echo: If True, SQLAlchemy will log all SQL statements.
         poolclass: SQLAlchemy pool class.
         isolation_level: Default transaction isolation level.
-        pool_config: Pool configuration settings.
+        pool_settings: Pool configuration settings (validated by caller, e.g., Pydantic).
         connect_args: Arguments passed to the database driver.
         extra_kwargs: Additional keyword arguments for create_async_engine.
         use_orjson: If True, use orjson for JSON serialization.
@@ -105,7 +82,6 @@ def build_engine_kwargs(
         Dictionary of engine keyword arguments ready for create_async_engine().
 
     Raises:
-        ValueError: If pool_config contains invalid values.
         ImportError: If use_orjson is True but orjson is not installed.
 
     Examples:
@@ -113,7 +89,7 @@ def build_engine_kwargs(
         ...     echo=False,
         ...     poolclass=NullPool,
         ...     isolation_level=None,
-        ...     pool_config=None,
+        ...     pool_settings=None,
         ...     connect_args=None,
         ...     extra_kwargs={},
         ...     use_orjson=False,
@@ -125,7 +101,7 @@ def build_engine_kwargs(
         "echo": echo,
         "poolclass": poolclass,
         "isolation_level": isolation_level,
-        "pool_pre_ping": True,
+        "pool_pre_ping": pool_settings.pre_ping if pool_settings else True,
     }
 
     if use_orjson:
@@ -133,9 +109,8 @@ def build_engine_kwargs(
 
         engine_kwargs.update(configure_orjson_serialization())
 
-    if pool_config:
-        _validate_pool_config(pool_config)
-        _apply_pool_config(engine_kwargs, poolclass, pool_config)
+    if pool_settings:
+        _apply_pool_settings(engine_kwargs, poolclass, pool_settings)
 
     if connect_args:
         engine_kwargs["connect_args"] = {k: v for k, v in connect_args.items() if v is not None}
@@ -146,59 +121,41 @@ def build_engine_kwargs(
     return engine_kwargs
 
 
-def _validate_pool_config(pool_config: PoolConfig) -> None:
-    """Validate pool configuration values.
-
-    Args:
-        pool_config: Pool configuration to validate.
-
-    Raises:
-        ValueError: If any configuration value is invalid.
-    """
-    if pool_config.size is not None and pool_config.size < 0:
-        raise ValueError(f"size must be non-negative, got {pool_config.size}")
-
-    if pool_config.max_overflow is not None and pool_config.max_overflow < -1:
-        raise ValueError(f"max_overflow must be >= -1, got {pool_config.max_overflow}")
-
-    if pool_config.timeout is not None and pool_config.timeout < 0:
-        raise ValueError(f"timeout must be non-negative, got {pool_config.timeout}")
-
-    if pool_config.recycle is not None and pool_config.recycle < -1:
-        raise ValueError(f"recycle must be >= -1, got {pool_config.recycle}")
-
-
-def _apply_pool_config(
+def _apply_pool_settings(
     engine_kwargs: dict[str, object],
     poolclass: type,
-    pool_config: PoolConfig,
+    pool_settings: PoolSettingsProtocol,
 ) -> None:
-    """Apply pool configuration to engine kwargs.
+    """Apply pool settings to engine kwargs.
 
-    Maps internal field names to SQLAlchemy's expected ``pool_*`` keyword arguments.
+    Maps pool settings to SQLAlchemy's expected ``pool_*`` keyword arguments.
+    Note: pool_pre_ping is already set in build_engine_kwargs, so not applied here.
+
+    Only applies pool size/overflow/recycle/timeout for pool classes that support them.
+    Checks if the pool class accepts these parameters via hasattr to avoid passing
+    unsupported kwargs to pools like NullPool or StaticPool.
 
     Args:
         engine_kwargs: Dictionary to update with pool configuration.
         poolclass: Pool class being configured.
-        pool_config: Pool configuration settings.
+        pool_settings: Pool configuration settings.
     """
-    if pool_config.pre_ping is not None:
-        engine_kwargs["pool_pre_ping"] = pool_config.pre_ping
+    # Build pool parameters dict
+    params = {
+        "pool_size": pool_settings.size,
+        "max_overflow": pool_settings.max_overflow,
+        "pool_recycle": pool_settings.recycle,
+        "pool_timeout": pool_settings.timeout,
+    }
 
-    # Only apply pool size/overflow settings for pooled connections
-    if poolclass not in _UNPOOLED_CLASSES:
-        params = {
-            "pool_size": pool_config.size,
-            "max_overflow": pool_config.max_overflow,
-            "pool_recycle": pool_config.recycle,
-            "pool_timeout": pool_config.timeout,
-        }
-        engine_kwargs.update({k: v for k, v in params.items() if v is not None})
+    # Apply only non-None parameters
+    # SQLAlchemy pool classes that don't support these params will ignore them
+    # or raise TypeError if passed, so we rely on the pool class itself to validate
+    engine_kwargs.update({k: v for k, v in params.items() if v is not None})
 
 
 __all__ = [
     "PoolClassStr",
     "build_engine_kwargs",
-    "register_pool_class",
     "resolve_pool_class",
 ]

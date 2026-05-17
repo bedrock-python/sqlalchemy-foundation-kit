@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from ...base._optional import require_optional
 from ...uow import AsyncSQLAlchemyUnitOfWork, AsyncUowTransaction, IsolationLevel
 
 if TYPE_CHECKING:
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 try:
-    from opentelemetry import trace
+    trace = require_optional("opentelemetry.trace", "telemetry")
     from opentelemetry.trace import Status, StatusCode
 
     HAS_OTEL = True
@@ -52,6 +53,8 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
         session_maker,
         transaction_factory,
         service_name: str = "sqlalchemy-foundation-kit",
+        *,
+        flush_before_commit: bool = True,
     ) -> None:
         """Initialize traced unit of work.
 
@@ -59,70 +62,88 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
             session_maker: SQLAlchemy async session maker.
             transaction_factory: Factory function to create transaction objects.
             service_name: Service name for OpenTelemetry tracer.
+            flush_before_commit: Default ``flush_before_commit`` policy applied when
+                :meth:`transaction` is called without an explicit override.
         """
-        super().__init__(session_maker, transaction_factory)
+        super().__init__(session_maker, transaction_factory, flush_before_commit=flush_before_commit)
         self._tracer: Tracer | None = trace.get_tracer(service_name) if HAS_OTEL else None
 
     @asynccontextmanager
-    async def transaction(
+    async def _traced(
         self,
-        isolation_level: IsolationLevel | str | None = None,
-        flush_before_commit: bool | None = None,
-        auto_commit: bool = True,
+        operation: str,
+        context_manager,
+        attributes: dict[str, str | bool] | None = None,
     ) -> AsyncIterator[T]:
-        """Create a new transaction context with tracing.
-
-        Automatically creates a span named "uow.transaction" with attributes:
-        - db.operation: "transaction"
-        - db.isolation_level: The isolation level (if specified)
-        - db.auto_commit: Whether auto-commit is enabled
-        - db.outcome: "commit" or "rollback"
+        """Generic tracing wrapper for UoW operations.
 
         Args:
-            isolation_level: Optional transaction isolation level.
-            flush_before_commit: If True, flush before commit.
-            auto_commit: If True, automatically commit on exit.
+            operation: Operation name (e.g., "transaction", "query").
+            context_manager: Async context manager to wrap with tracing.
+            attributes: Optional span attributes to set.
 
         Yields:
-            Transaction object with repositories.
+            Transaction object from the wrapped context manager.
         """
         if not self._tracer:
-            # No tracing available, delegate to parent
-            async with super().transaction(
-                isolation_level=isolation_level,
-                flush_before_commit=flush_before_commit,
-                auto_commit=auto_commit,
-            ) as tx:
-                yield tx
+            # No tracing available, delegate to wrapped context manager
+            async with context_manager as result:
+                yield result
             return
 
-        span: Span = self._tracer.start_span("uow.transaction")
-        span.set_attribute("db.operation", "transaction")
-        if isolation_level:
-            span.set_attribute("db.isolation_level", str(isolation_level))
-        span.set_attribute("db.auto_commit", auto_commit)
+        span: Span = self._tracer.start_span(f"uow.{operation}")
+        span.set_attribute("db.operation", operation)
+
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
 
         try:
-            async with super().transaction(
-                isolation_level=isolation_level,
-                flush_before_commit=flush_before_commit,
-                auto_commit=auto_commit,
-            ) as tx:
-                yield tx
+            async with context_manager as result:
+                yield result
 
-            # Transaction succeeded
-            span.set_attribute("db.outcome", "commit" if auto_commit else "manual")
             span.set_status(Status(StatusCode.OK))
 
         except Exception as e:
-            # Transaction failed
-            span.set_attribute("db.outcome", "rollback")
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)
             raise
 
         finally:
             span.end()
+
+    @asynccontextmanager
+    async def transaction(
+        self,
+        isolation_level: IsolationLevel | str | None = None,
+        flush_before_commit: bool | None = None,
+    ) -> AsyncIterator[T]:
+        """Create a new transaction context with tracing.
+
+        Automatically creates a span named "uow.transaction" with attributes:
+        - db.operation: "transaction"
+        - db.isolation_level: The isolation level (if specified)
+
+        Args:
+            isolation_level: Optional transaction isolation level.
+            flush_before_commit: If True, flush before commit.
+
+        Yields:
+            Transaction object with repositories.
+        """
+        attributes = {}
+        if isolation_level:
+            attributes["db.isolation_level"] = str(isolation_level)
+
+        async with self._traced(
+            operation="transaction",
+            context_manager=super().transaction(
+                isolation_level=isolation_level,
+                flush_before_commit=flush_before_commit,
+            ),
+            attributes=attributes,
+        ) as tx:
+            yield tx
 
     @asynccontextmanager
     async def query(
@@ -141,30 +162,16 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
         Yields:
             Query object with repositories.
         """
-        if not self._tracer:
-            # No tracing available, delegate to parent
-            async with super().query(isolation_level=isolation_level) as qx:
-                yield qx
-            return
-
-        span: Span = self._tracer.start_span("uow.query")
-        span.set_attribute("db.operation", "query")
+        attributes = {}
         if isolation_level:
-            span.set_attribute("db.isolation_level", str(isolation_level))
+            attributes["db.isolation_level"] = str(isolation_level)
 
-        try:
-            async with super().query(isolation_level=isolation_level) as qx:
-                yield qx
-
-            span.set_status(Status(StatusCode.OK))
-
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.record_exception(e)
-            raise
-
-        finally:
-            span.end()
+        async with self._traced(
+            operation="query",
+            context_manager=super().query(isolation_level=isolation_level),
+            attributes=attributes,
+        ) as qx:
+            yield qx
 
 
 __all__ = ["TracedAsyncUnitOfWork"]
