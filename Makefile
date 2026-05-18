@@ -1,7 +1,7 @@
 .PHONY: test test-unit test-integration fmt check build install docs-serve docs-build clean
 
 install:
-	uv sync --group dev
+	uv sync --group dev --all-extras
 
 fmt:
 	uv run ruff format .
@@ -13,13 +13,13 @@ check:
 	uv run mypy sqlalchemy_foundation_kit
 
 test-unit:
-	uv run pytest -m unit
+	uv run --all-extras pytest -m unit
 
 test-integration:
-	uv run pytest -m integration
+	uv run --all-extras pytest -m integration
 
 test:
-	uv run pytest --cov=sqlalchemy_foundation_kit --cov-report=term --cov-fail-under=90 --cov-report=xml:coverage.xml
+	uv run --all-extras pytest --cov=sqlalchemy_foundation_kit --cov-report=term --cov-fail-under=90 --cov-report=xml:coverage.xml
 
 build:
 	uv build

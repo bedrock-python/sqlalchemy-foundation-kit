@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ...protocols import PostgresMetricsProtocol
+from .._metrics_utils import _infra_metrics_prefix
 from ._base import BaseDishkaProvider
 from ._deps import Scope, provide
 
@@ -39,19 +40,6 @@ class BaseMetricsProvider(BaseDishkaProvider):
 
     scope = Scope.APP
 
-    @staticmethod
-    def _infra_metrics_prefix(default_prefix: str | None) -> str | None:
-        """Resolve prefix from the app (``get_default_prefix`` → ``str | None``).
-
-        ``None`` or whitespace-only string means no prefix for underlying metrics classes.
-        This intentionally does **not** read ``PrometheusMetricsSettingsProtocol.prefix`` so
-        service-level ``METRICS__PREFIX`` can target business metrics only.
-        """
-        if default_prefix is None:
-            return None
-        stripped = default_prefix.strip()
-        return stripped if stripped else None
-
 
 try:
     from ...contrib.metrics import PostgresMetrics
@@ -69,7 +57,7 @@ try:
             """Provide Postgres metrics implementing PostgresMetricsProtocol."""
             if postgres is None or not postgres.metrics_enabled:
                 return None
-            return PostgresMetrics(prefix=self._infra_metrics_prefix(default_prefix))
+            return PostgresMetrics(prefix=_infra_metrics_prefix(default_prefix))
 
 except ImportError:  # pragma: no cover
     PrometheusPostgresMetricsProvider = None  # type: ignore[misc,assignment]

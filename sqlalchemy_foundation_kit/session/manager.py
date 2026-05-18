@@ -8,9 +8,10 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import event
+from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from ..base import build_engine_kwargs, resolve_pool_class
@@ -21,31 +22,46 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DISPOSE_TIMEOUT_SECONDS = 30.0
+DEFAULT_DISPOSE_TIMEOUT_SECONDS = 30.0
+
+
+def _safe_metric_call(func: Callable[[], None], error_msg: str) -> None:
+    """Call a metric-recording function and swallow exceptions.
+
+    Metrics must never break application logic — any failure inside the metric
+    callback is logged at exception level and discarded.
+
+    Args:
+        func: Zero-arg callable that records a metric.
+        error_msg: Message logged together with the traceback on failure.
+    """
+    try:
+        func()
+    except Exception:
+        logger.exception(error_msg)
 
 
 def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> None:
-    """Attach metrics event listeners to SQLAlchemy engine.
+    """Attach metrics event listeners to a SQLAlchemy engine.
 
     Registers event handlers for connection checkout, checkin, and error events
     to collect pool statistics and connection metrics.
 
     Args:
-        engine: SQLAlchemy AsyncEngine to attach listeners to.
-        metrics: Metrics collector implementing PostgresMetricsProtocol.
+        engine: SQLAlchemy ``AsyncEngine`` to attach listeners to.
+        metrics: Metrics collector implementing ``PostgresMetricsProtocol``.
     """
     pool = engine.pool
 
     def record_pool_stats() -> None:
-        """Record current pool statistics."""
-        try:
-            metrics.record_pool_stats(
+        _safe_metric_call(
+            lambda: metrics.record_pool_stats(
                 pool_size=pool.size() if hasattr(pool, "size") else 0,
                 pool_checked_out=pool.checkedout() if hasattr(pool, "checkedout") else 0,
                 pool_overflow=pool.overflow() if hasattr(pool, "overflow") else 0,
-            )
-        except Exception:
-            logger.exception("Failed to record database pool metrics")
+            ),
+            "Failed to record database pool stats",
+        )
 
     def on_checkout(dbapi_connection: Any, connection_record: Any, connection_proxy: Any) -> None:
         """Handle connection checkout event."""
@@ -58,19 +74,20 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
 
         if "checkout_start" in connection_record.info:
             duration = time.perf_counter() - connection_record.info["checkout_start"]
-            try:
-                metrics.record_checkout(duration=duration)
-            except Exception:
-                logger.exception("Failed to record database checkout metrics")
+            _safe_metric_call(
+                lambda: metrics.record_checkout(duration=duration),
+                "Failed to record database checkout duration",
+            )
 
     def on_error(exception_context: Any) -> None:
         """Handle database error event."""
-        error_type = type(exception_context.original_exception).__name__
-        is_timeout = "timeout" in str(exception_context.original_exception).lower()
-        try:
-            metrics.record_error(error_type=error_type, is_timeout=is_timeout)
-        except Exception:
-            logger.exception("Failed to record database error metrics")
+        exc = exception_context.original_exception
+        error_type = type(exc).__name__
+        is_timeout = isinstance(exc, (TimeoutError, SATimeoutError))
+        _safe_metric_call(
+            lambda: metrics.record_error(error_type=error_type, is_timeout=is_timeout),
+            "Failed to record database error metric",
+        )
 
     event.listen(pool, "checkout", on_checkout)
     event.listen(pool, "checkin", on_checkin)
@@ -78,41 +95,14 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
 
 
 class AsyncSessionManager[SessionT: AsyncSession]:
-    """Manages async database sessions with configurable connection pooling."""
+    """Manages async database sessions with configurable connection pooling.
 
-    @overload
-    def __init__(
-        self: AsyncSessionManager[AsyncSession],
-        url: str,
-        echo: bool = False,
-        poolclass: str | type = "null",
-        session_class: None = None,
-        expire_on_commit: bool = False,
-        connect_args: dict[str, object] | None = None,
-        isolation_level: str | None = None,
-        pool_settings: PoolSettingsProtocol | None = None,
-        use_orjson: bool = False,
-        metrics: PostgresMetricsProtocol | None = None,
-        on_engine_created: Callable[[AsyncEngine], None] | None = None,
-        **kwargs: object,
-    ) -> None: ...
+    Supports two initialization approaches:
 
-    @overload
-    def __init__(
-        self,
-        url: str,
-        echo: bool = False,
-        poolclass: str | type = "null",
-        session_class: type[SessionT] | None = None,
-        expire_on_commit: bool = False,
-        connect_args: dict[str, object] | None = None,
-        isolation_level: str | None = None,
-        pool_settings: PoolSettingsProtocol | None = None,
-        use_orjson: bool = False,
-        metrics: PostgresMetricsProtocol | None = None,
-        on_engine_created: Callable[[AsyncEngine], None] | None = None,
-        **kwargs: object,
-    ) -> None: ...
+    1. **Direct constructor** — all parameters in constructor with defaults.
+    2. **Builder pattern** — use :class:`AsyncSessionManagerBuilder` for more
+       readable complex configurations.
+    """
 
     def __init__(
         self,
@@ -127,28 +117,33 @@ class AsyncSessionManager[SessionT: AsyncSession]:
         use_orjson: bool = False,
         metrics: PostgresMetricsProtocol | None = None,
         on_engine_created: Callable[[AsyncEngine], None] | None = None,
+        dispose_timeout: float = DEFAULT_DISPOSE_TIMEOUT_SECONDS,
         **kwargs: object,
     ) -> None:
-        """Initialize session manager.
+        """Initialize session manager with direct configuration.
 
         Args:
-            url: Database connection URL.
-            echo: If True, SQLAlchemy will log all SQL statements.
-            poolclass: SQLAlchemy pool class or name.
-            session_class: Custom session class.
-            expire_on_commit: If True, objects expire after commit.
-            connect_args: Arguments passed to the database driver.
-            isolation_level: Default transaction isolation level.
-            pool_settings: Pool configuration settings (validated by caller, e.g., Pydantic).
-            use_orjson: If True, use orjson for JSON serialization.
-            metrics: Optional metrics collector.
-            on_engine_created: Optional callback invoked with the AsyncEngine right
-                after creation. Use it to attach OpenTelemetry instrumentation,
-                custom SQLAlchemy event listeners, debug hooks, etc.
-            **kwargs: Additional keyword arguments for create_async_engine.
+            url: Database connection URL (required).
+            echo: If True, SQLAlchemy will log all SQL statements (default: False).
+            poolclass: SQLAlchemy pool class or name (default: "null").
+                Use "queue" for production, "null" for testing.
+            session_class: Custom ``AsyncSession`` subclass (default: ``AsyncSession``).
+            expire_on_commit: If True, objects expire after commit (default: False).
+            connect_args: Arguments passed to the database driver (default: None).
+            isolation_level: Default transaction isolation level (default: None).
+            pool_settings: Pool configuration settings (default: None).
+            use_orjson: If True, use orjson for JSON serialization (default: False).
+            metrics: Optional metrics collector (default: None).
+            on_engine_created: Optional callback invoked with ``AsyncEngine`` after creation.
+                Use for OpenTelemetry instrumentation, custom event listeners, etc.
+            dispose_timeout: Maximum seconds to wait for engine disposal in :meth:`aclose`
+                (default: 30.0). Lower this in tests or short-lived environments; raise it
+                if you have long-running transactions that need more time to settle.
+            **kwargs: Additional keyword arguments for ``create_async_engine``.
         """
         self._closed = False
         self._close_lock = asyncio.Lock()
+        self._dispose_timeout = dispose_timeout
         resolved_poolclass = resolve_pool_class(poolclass)
         engine_kwargs = build_engine_kwargs(
             echo=echo,
@@ -184,7 +179,7 @@ class AsyncSessionManager[SessionT: AsyncSession]:
             # Use shield so disposal runs even if the task is cancelled; timeout avoids indefinite hang.
             await asyncio.wait_for(
                 asyncio.shield(self._engine.dispose()),
-                timeout=DISPOSE_TIMEOUT_SECONDS,
+                timeout=self._dispose_timeout,
             )
             self._closed = True
 

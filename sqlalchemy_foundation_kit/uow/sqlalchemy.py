@@ -15,6 +15,9 @@ from .protocols import AsyncUnitOfWork, AsyncUowTransaction
 
 logger = logging.getLogger(__name__)
 
+# Cache valid isolation levels for performance (avoid recreating set on each call)
+_VALID_ISOLATION_LEVELS: frozenset[str] = frozenset(item.value for item in IsolationLevel)
+
 
 def normalize_isolation_level(isolation_level: IsolationLevel | str | None) -> str | None:
     """Normalize isolation_level to a valid PostgreSQL string or None.
@@ -30,18 +33,58 @@ def normalize_isolation_level(isolation_level: IsolationLevel | str | None) -> s
 
     Raises:
         ValueError: If isolation_level is not supported.
+
+    Examples:
+        >>> normalize_isolation_level(None)
+        None
+        >>> normalize_isolation_level(IsolationLevel.READ_COMMITTED)
+        'READ COMMITTED'
+        >>> normalize_isolation_level("READ_COMMITTED")
+        'READ COMMITTED'
+        >>> normalize_isolation_level("read committed")
+        'READ COMMITTED'
     """
-    if not isolation_level:
+    # Explicit None check (PEP 8: explicit is better than implicit)
+    if isolation_level is None:
         return None
+
+    # Fast path for enum members
     if isinstance(isolation_level, IsolationLevel):
         return isolation_level.value
-    level_str = str(isolation_level).upper().replace("_", " ")
-    valid_levels = {item.value for item in IsolationLevel}
-    if level_str not in valid_levels:
-        raise ValueError(
-            f"Unsupported isolation level: {isolation_level}. Supported values: {', '.join(sorted(valid_levels))}"
-        )
-    return level_str
+
+    # Normalize string input: uppercase and replace underscores with spaces
+    normalized = str(isolation_level).upper().replace("_", " ")
+
+    # Validate against cached valid levels
+    if normalized not in _VALID_ISOLATION_LEVELS:
+        supported = ", ".join(sorted(_VALID_ISOLATION_LEVELS))
+        raise ValueError(f"Invalid isolation level: {isolation_level!r}. Supported values: {supported}")
+
+    return normalized
+
+
+async def apply_isolation_level(
+    session: AsyncSession,
+    isolation_level: IsolationLevel | str | None,
+) -> None:
+    """Apply isolation level to an async session's connection.
+
+    This is a DRY utility to eliminate duplication of isolation level application logic
+    across different session/transaction contexts.
+
+    Args:
+        session: SQLAlchemy AsyncSession to configure.
+        isolation_level: Desired isolation level (enum, string, or None).
+
+    Examples:
+        >>> async with session_maker() as session:
+        ...     await apply_isolation_level(session, IsolationLevel.SERIALIZABLE)
+        ...     # Now session connection has SERIALIZABLE isolation level
+    """
+    normalized = normalize_isolation_level(isolation_level)
+    if normalized is not None:
+        conn = await session.connection()
+        await conn.run_sync(lambda c: c.execution_options(isolation_level=normalized))
 
 
 class AsyncSQLAlchemyUowTransaction(AsyncUowTransaction):
@@ -170,13 +213,9 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
                             )
                             yield session
         """
-        isolation_level = normalize_isolation_level(isolation_level)
-        options = {"isolation_level": isolation_level} if isolation_level else {}
-
         async with self._session_maker() as session:
-            if options:
-                conn = await session.connection()
-                await conn.run_sync(lambda c: c.execution_options(**options))
+            # Apply isolation level if specified (DRY: using utility function)
+            await apply_isolation_level(session, isolation_level)
             yield session
 
     @asynccontextmanager
@@ -284,6 +323,14 @@ class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
 
                     # Final decision
                     await session.commit()
+
+        Note:
+            Prefer :meth:`transaction` for the vast majority of use cases — it commits
+            automatically and enforces the UoW pattern. This method is an advanced escape
+            hatch for scenarios where the commit/rollback decision depends on conditions
+            that can only be evaluated after data is written (e.g., external service
+            validation). ``session.commit()`` calls belong exclusively at the use-case
+            boundary via this method, never inside repository implementations.
 
         Warning:
             You MUST explicitly call session.commit() or session.rollback().

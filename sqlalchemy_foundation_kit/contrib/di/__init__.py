@@ -6,6 +6,7 @@ from ._base import BaseDishkaProvider
 from .database import (
     AsyncDatabaseProvider,
     AsyncUnitOfWorkProvider,
+    RetryConfig,
     retry_async_connection,
 )
 from .metrics import PrometheusPostgresMetricsProvider
@@ -15,5 +16,6 @@ __all__ = [
     "AsyncUnitOfWorkProvider",
     "BaseDishkaProvider",
     "PrometheusPostgresMetricsProvider",
+    "RetryConfig",
     "retry_async_connection",
 ]

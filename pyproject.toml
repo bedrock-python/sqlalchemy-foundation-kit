@@ -48,8 +48,11 @@ metrics = [
 orjson = [
     "orjson>=3.10.17,<4.0.0",
 ]
-di = [
+dishka = [
     "dishka>=1.5.1,<2.0.0",
+]
+dependency-injector = [
+    "dependency-injector>=4.43.0,<5.0.0",
 ]
 telemetry = [
     "opentelemetry-api>=1.30.0,<2.0.0",
@@ -62,6 +65,7 @@ all = [
     "prometheus-client>=0.21.0,<1.0.0",
     "orjson>=3.10.17,<4.0.0",
     "dishka>=1.5.1,<2.0.0",
+    "dependency-injector>=4.43.0,<5.0.0",
     "opentelemetry-api>=1.30.0,<2.0.0",
     "opentelemetry-sdk>=1.30.0,<2.0.0",
     "opentelemetry-instrumentation-sqlalchemy>=0.51b0,<1.0.0",
@@ -76,6 +80,8 @@ test = [
     "pytest-mock>=3.14.0",
     "freezegun>=1.5.5",
     "asyncpg>=0.30.0",
+    "testcontainers>=4.11.0",
+    "docker>=7.1.0",
 ]
 docs = [
     "zensical>=0.0.37",
@@ -134,10 +140,25 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "PLC0415",  # import should be at top-level (OK in tests for isolation)
+    "SIM117",   # nested with statements (OK in tests for clarity)
+    "RUF015",   # prefer next() over slice (OK in tests)
+    "B017",     # blind exception (OK in integration tests)
+    "E721",     # type comparison (OK in tests)
+    "F841",     # unused variable (OK in tests)
+    "RUF059",   # unpacked variable unused (OK in tests)
+    "TRY300",   # consider else block (OK in tests)
+    "TRY301",   # abstract raise (OK in tests)
+    "UP042",    # StrEnum inheritance (OK in tests)
+]
+
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = [

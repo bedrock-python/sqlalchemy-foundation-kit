@@ -1,24 +1,27 @@
 # sqlalchemy-foundation-kit
 
-**Foundation layer for SQLAlchemy-based services with Unit of Work, session management, and observability**
+**Production-ready foundation for SQLAlchemy-based async services with Unit of Work, session management, and observability**
 
-`sqlalchemy-foundation-kit` is a high-level abstraction that combines:
-- **[pydantic-settings-kit](https://github.com/bedrock-python/pydantic-settings-kit)** — PostgreSQL configuration
-- **[sqlalchemy-postgres-kit](https://github.com/bedrock-python/sqlalchemy-postgres-kit)** — Session management, base ORM models, pgbouncer compatibility
-- **[unit-of-work-kit](https://github.com/bedrock-python/unit-of-work-kit)** — Unit of Work pattern implementation
-- **[service-observability](https://github.com/bedrock-python/service-observability)** — PostgreSQL connection pool metrics
+`sqlalchemy-foundation-kit` is a standalone, batteries-included foundation for building async SQLAlchemy microservices. It bundles everything you commonly re-implement for every service into a single library:
 
-Into a single, production-ready foundation for building SQLAlchemy-based microservices.
+- **PostgreSQL configuration** — Pydantic-based settings with grouped connection / pool / query options
+- **Session management** — `AsyncSessionManager` with pgbouncer transaction-mode compatibility
+- **Unit of Work pattern** — `AsyncSQLAlchemyUnitOfWork` with automatic commit/rollback
+- **Base ORM models** — Pre-configured `Base`, mixins, custom types (`PydanticJSONB`, `UnConstrainedEnum`)
+- **Observability** — Prometheus connection-pool metrics and OpenTelemetry tracing
+- **DI integration** — Ready-to-use providers for [`dishka`](https://github.com/reagento/dishka) and `dependency-injector`
+
+Only `sqlalchemy[asyncio]` and `pydantic` are required by default — everything else is an opt-in extra.
 
 ## Key Features
 
-✅ **All-in-one foundation** — One library instead of four  
+✅ **Single dependency** — All foundation pieces in one place  
 ✅ **Unit of Work pattern** — Transactional consistency with automatic commit/rollback  
-✅ **Connection pool management** — AsyncSessionManager with metrics and health checks  
+✅ **Connection pool management** — `AsyncSessionManager` with metrics and health checks  
 ✅ **pgbouncer compatible** — Custom connection class for transaction mode  
-✅ **Observability built-in** — Prometheus metrics for connection pool  
+✅ **Observability built-in** — Prometheus metrics + OpenTelemetry tracing  
 ✅ **Type-safe configuration** — Pydantic settings with validation  
-✅ **Base ORM models** — Pre-configured Base with naming conventions and mixins  
+✅ **Base ORM models** — Pre-configured `Base` with naming conventions and mixins  
 
 ## Installation
 
@@ -36,7 +39,10 @@ pip install sqlalchemy-foundation-kit[metrics]
 pip install sqlalchemy-foundation-kit[telemetry]
 
 # With dishka dependency injection
-pip install sqlalchemy-foundation-kit[di]
+pip install sqlalchemy-foundation-kit[dishka]
+
+# With dependency-injector containers
+pip install sqlalchemy-foundation-kit[dependency-injector]
 
 # With orjson serialization
 pip install sqlalchemy-foundation-kit[orjson]
@@ -211,7 +217,7 @@ from sqlalchemy_foundation_kit.contrib.metrics import PostgresMetrics
 - `PostgresMetrics` — Prometheus metrics for connection pool
 - Tracks: pool size, checked out connections, checkout duration, errors
 
-#### `contrib.di` (requires `[di]`)
+#### `contrib.di` (requires `[dishka]`)
 ```python
 from sqlalchemy_foundation_kit.contrib.di import (
     AsyncDatabaseProvider,
@@ -238,6 +244,51 @@ container = make_async_container(
     PrometheusPostgresMetricsProvider(),
     # ... your providers
 )
+```
+
+#### `contrib.dependency_injector` (requires `[dependency-injector]`)
+```python
+from sqlalchemy_foundation_kit.contrib.dependency_injector import (
+    DatabaseContainer,
+    AsyncDatabaseResourceProvider,
+    PrometheusMetricsContainer,
+)
+```
+- `DatabaseContainer` — Container providing `session_manager`, `session_maker`, and `uow`
+- `AsyncDatabaseResourceProvider` — Manual lifecycle management helper
+- `PrometheusMetricsContainer` — Container for Prometheus metrics integration
+
+**Example with dependency-injector:**
+```python
+from dependency_injector import containers, providers
+from sqlalchemy_foundation_kit.contrib.dependency_injector import (
+    DatabaseContainer,
+    PrometheusMetricsContainer,
+)
+
+class AppContainer(containers.DeclarativeContainer):
+    config = providers.Singleton(Settings)
+    
+    metrics = providers.Container(
+        PrometheusMetricsContainer,
+        metrics_settings=config.provided.metrics,
+        default_prefix=providers.Object("myapp"),
+        postgres_settings=config.provided.postgres,
+    )
+    
+    database = providers.Container(
+        DatabaseContainer,
+        postgres_config=config.provided.postgres,
+        metrics=metrics.postgres_metrics,
+    )
+
+container = AppContainer()
+await container.init_resources()
+
+# Use dependencies
+uow = container.database.uow()
+async with uow.transaction() as tx:
+    user = await tx.users.create(...)
 ```
 
 #### `contrib.telemetry` (requires `[telemetry]`)
@@ -289,13 +340,11 @@ async with uow.transaction() as tx:
 ```mermaid
 graph LR
     A[Your Service] --> B[sqlalchemy-foundation-kit]
-    B --> C[unit-of-work-kit]
-    B --> D[sqlalchemy-postgres-kit]
-    B --> E[pydantic-settings-kit]
-    B --> F[service-observability]
-    D --> G[SQLAlchemy]
-    E --> H[Pydantic]
-    F --> I[Prometheus]
+    B --> C[SQLAlchemy asyncio]
+    B --> D[Pydantic]
+    B -.optional.-> E[Prometheus]
+    B -.optional.-> F[OpenTelemetry]
+    B -.optional.-> G[dishka / dependency-injector]
 ```
 
 ## Documentation

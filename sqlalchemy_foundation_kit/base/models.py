@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import enum
 import uuid
 from functools import partial
 from typing import Any, ClassVar
@@ -67,14 +68,14 @@ class DatetimeColumnsMixin:
         )
 
 
-def _extract_enum_values(enum_obj: Any) -> list[Any] | Any:
-    """Extract values from Python enum or return the object as-is.
+def _extract_enum_values(enum_obj: type[enum.Enum] | list[object]) -> list[object]:
+    """Extract values from Python enum or return the list as-is.
 
     Args:
         enum_obj: Either a Python Enum class with __members__ or a list of values.
 
     Returns:
-        List of enum values (extracting .value attribute if available) or the input object.
+        List of enum values (extracting .value attribute if available) or the input list.
 
     Examples:
         >>> from enum import Enum
@@ -88,7 +89,7 @@ def _extract_enum_values(enum_obj: Any) -> list[Any] | Any:
     """
     if hasattr(enum_obj, "__members__"):
         return [getattr(item, "value", item) for item in enum_obj]
-    return enum_obj
+    return list(enum_obj)  # type: ignore[arg-type]
 
 
 UnConstrainedEnum = partial(

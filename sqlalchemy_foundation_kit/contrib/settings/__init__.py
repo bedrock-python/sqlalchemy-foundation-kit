@@ -8,7 +8,6 @@ from .postgres import (
     ConnectionSettings,
     PoolSettings,
     QuerySettings,
-    build_dsn,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "ConnectionSettings",
     "PoolSettings",
     "QuerySettings",
-    "build_dsn",
 ]

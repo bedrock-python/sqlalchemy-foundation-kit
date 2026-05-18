@@ -5,14 +5,16 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import quote_plus
 
-from ...base._optional import require_optional
 from ...base.engine import PoolClassStr
 
-pydantic = require_optional("pydantic", "settings")
-pydantic_settings = require_optional("pydantic_settings", "settings")
-
-from pydantic import BaseModel, Field, SecretStr, model_validator  # noqa: E402
-from pydantic_settings import BaseSettings, SettingsConfigDict  # noqa: E402
+try:
+    from pydantic import BaseModel, Field, SecretStr, model_validator
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except ImportError as _e:
+    raise ImportError(
+        "pydantic and pydantic-settings are required for this functionality. "
+        "Install with: pip install 'sqlalchemy-foundation-kit[settings]'"
+    ) from _e
 
 PostgresIsolationLevel = Literal["READ UNCOMMITTED", "READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"]
 PostgresJit = Literal["off", "on"]
@@ -109,7 +111,7 @@ class BasePostgresConfig(BaseSettings):
         ... )
         >>> dsn = config.to_dsn()
         >>> host = config.connection.host
-        >>> pool_size = config.pool.pool_size
+        >>> pool_size = config.pool.size
     """
 
     # Grouped configuration

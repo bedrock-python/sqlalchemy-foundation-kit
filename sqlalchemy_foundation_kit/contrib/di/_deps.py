@@ -25,7 +25,7 @@ def check_dishka() -> None:
     """
     if not HAS_DISHKA:
         raise ImportError(
-            "dishka is required for providers. Install it with: pip install 'sqlalchemy-foundation-kit[di]'"
+            "dishka is required for providers. Install it with: pip install 'sqlalchemy-foundation-kit[dishka]'"
         )
 
 

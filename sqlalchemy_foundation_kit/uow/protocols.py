@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class AsyncUowTransaction(Protocol):
@@ -19,12 +19,6 @@ class SupportsAdvisoryLock(Protocol):
 
     Use this when your transaction needs PostgreSQL advisory lock support.
     Not all transactions require this capability (e.g., in-memory, read-only).
-
-    Examples:
-        >>> async def execute_with_lock(tx: SupportsAdvisoryLock, key: int) -> None:
-        ...     if await tx.try_advisory_lock(key):
-        ...         # Critical section protected by advisory lock
-        ...         ...
     """
 
     async def try_advisory_lock(self, key: int) -> bool:
@@ -39,28 +33,46 @@ class SupportsAdvisoryLock(Protocol):
 class AsyncUnitOfWork[T: AsyncUowTransaction](Protocol):
     """Provides transactional context for repository operations.
 
-    Provides two modes of operation:
-    - transaction(): For write operations with automatic commit/rollback
-    - query(): For read-only operations without transaction management
+    Provides three modes of operation:
+        - ``transaction()``: For write operations with automatic commit/rollback.
+        - ``managed_session()``: For write operations with **manual** commit/rollback control.
+        - ``query()``: For read-only operations without transaction management.
     """
 
     def transaction(
         self,
         isolation_level: str | None = None,
         flush_before_commit: bool | None = None,
-        auto_commit: bool = True,
     ) -> AbstractAsyncContextManager[T]:
-        """Create a new transaction context.
+        """Create a new transaction context with automatic commit/rollback.
 
         Args:
             isolation_level: Optional transaction isolation level.
             flush_before_commit: If True, flush session before commit to surface
                 constraint violations within transaction. If ``None``, the implementation
                 applies its own default (typically configured at construction time).
-                Only applies when auto_commit=True.
-            auto_commit: If True, automatically commit on success or rollback on exception.
-                If False, caller must call session.commit() or session.rollback() manually.
+        """
+
+    def managed_session(
+        self,
+        isolation_level: str | None = None,
+    ) -> AbstractAsyncContextManager[tuple[T, Any]]:
+        """Create a session with manual transaction control.
+
+        Unlike :meth:`transaction`, this does **NOT** auto-commit on success. The caller
+        must explicitly call ``session.commit()`` or ``session.rollback()``. Useful for
+        complex transactional logic where the commit decision depends on multiple
+        conditions or external factors.
+
+        The second element of the yielded tuple is the underlying session object
+        (typed as ``Any`` in the protocol to avoid leaking SQLAlchemy types — concrete
+        implementations like ``AsyncSQLAlchemyUnitOfWork`` yield ``AsyncSession``).
+
+        On exception inside the context, the session is automatically rolled back.
+
+        Args:
+            isolation_level: Optional transaction isolation level.
         """
 
     def query(self, isolation_level: str | None = None) -> AbstractAsyncContextManager[T]:
-        """Create a read-only query context."""
+        """Create a read-only query context without transaction management."""

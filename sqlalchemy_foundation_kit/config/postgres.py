@@ -5,6 +5,18 @@ from __future__ import annotations
 from typing import Protocol
 
 
+class PasswordLike(Protocol):
+    """Protocol for secret string types (e.g., ``pydantic.SecretStr``).
+
+    Allows ``ConnectionSettingsProtocol.password`` to accept either a plain ``str``
+    or a SecretStr-like object without forcing pydantic as a dependency in the core layer.
+    """
+
+    def get_secret_value(self) -> str:
+        """Return the underlying secret value as a plain string."""
+        ...
+
+
 class ConnectionSettingsProtocol(Protocol):
     """Protocol for PostgreSQL connection settings.
 
@@ -14,16 +26,15 @@ class ConnectionSettingsProtocol(Protocol):
         host: PostgreSQL server hostname or IP address.
         port: PostgreSQL server port number.
         user: Database username for authentication.
+        password: Database password — either a plain ``str`` or a SecretStr-like object
+            implementing ``get_secret_value()``.
         database: Target database name.
-
-    Examples:
-        >>> connection: ConnectionSettingsProtocol = ...
-        >>> dsn = f"postgresql://{connection.user}@{connection.host}:{connection.port}/{connection.database}"
     """
 
     host: str
     port: int
     user: str
+    password: PasswordLike | str
     database: str
 
 

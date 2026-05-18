@@ -9,9 +9,12 @@ from .base import (
     BaseTable,
     DatetimeColumnsMixin,
     GenericJSONDict,
+    PoolClassStr,
+    PoolRegistry,
     PydanticJSONB,
     UnConstrainedEnum,
     build_engine_kwargs,
+    configure_orjson_serialization,
     load_orm_metadata,
     register_pool_class,
     resolve_pool_class,
@@ -20,7 +23,6 @@ from .base import (
 # Config
 from .config import (
     ConnectionSettingsProtocol,
-    PoolConfig,
     PoolSettingsProtocol,
     PostgresSettingsProtocol,
     QuerySettingsProtocol,
@@ -36,9 +38,14 @@ from .protocols import (
 
 # Session Management
 from .session import (
+    DEFAULT_HEALTHCHECK_QUERY,
+    DEFAULT_RETRY_CONFIG,
     AsyncCConnection,
     AsyncSessionManager,
+    AsyncSessionManagerBuilder,
+    RetryConfig,
     create_async_session_manager,
+    retry_async_connection,
     try_advisory_xact_lock,
 )
 
@@ -49,6 +56,7 @@ from .uow import (
     AsyncUnitOfWork,
     AsyncUowTransaction,
     IsolationLevel,
+    PostgresAdvisoryLockMixin,
     SupportsAdvisoryLock,
 )
 
@@ -64,15 +72,17 @@ __all__ = [  # noqa: RUF022
     "BaseTable",
     "DatetimeColumnsMixin",
     "GenericJSONDict",
+    "PoolClassStr",
+    "PoolRegistry",
     "PydanticJSONB",
     "UnConstrainedEnum",
     "build_engine_kwargs",
+    "configure_orjson_serialization",
     "load_orm_metadata",
     "register_pool_class",
     "resolve_pool_class",
     # Config
     "ConnectionSettingsProtocol",
-    "PoolConfig",
     "PoolSettingsProtocol",
     "PostgresSettingsProtocol",
     "QuerySettingsProtocol",
@@ -82,9 +92,14 @@ __all__ = [  # noqa: RUF022
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",
     # Session Management
+    "DEFAULT_HEALTHCHECK_QUERY",
+    "DEFAULT_RETRY_CONFIG",
     "AsyncCConnection",
     "AsyncSessionManager",
+    "AsyncSessionManagerBuilder",
+    "RetryConfig",
     "create_async_session_manager",
+    "retry_async_connection",
     "try_advisory_xact_lock",
     # Unit of Work
     "AsyncSQLAlchemyUnitOfWork",
@@ -92,6 +107,7 @@ __all__ = [  # noqa: RUF022
     "AsyncUnitOfWork",
     "AsyncUowTransaction",
     "IsolationLevel",
+    "PostgresAdvisoryLockMixin",
     "SupportsAdvisoryLock",
     # Version
     "__version__",

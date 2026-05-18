@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING
 
 from ...base._optional import require_optional
@@ -12,7 +12,7 @@ from ...uow import AsyncSQLAlchemyUnitOfWork, AsyncUowTransaction, IsolationLeve
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span, Tracer
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,8 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
 
     def __init__(
         self,
-        session_maker,
-        transaction_factory,
+        session_maker: async_sessionmaker[AsyncSession],
+        transaction_factory: Callable[[AsyncSession], T],
         service_name: str = "sqlalchemy-foundation-kit",
         *,
         flush_before_commit: bool = True,
@@ -73,7 +73,7 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
     async def _traced(
         self,
         operation: str,
-        context_manager,
+        context_manager: AbstractAsyncContextManager[T],
         attributes: dict[str, str | bool] | None = None,
     ) -> AsyncIterator[T]:
         """Generic tracing wrapper for UoW operations.
@@ -132,7 +132,7 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
         Yields:
             Transaction object with repositories.
         """
-        attributes = {}
+        attributes: dict[str, str | bool] = {}
         if isolation_level:
             attributes["db.isolation_level"] = str(isolation_level)
 
@@ -163,16 +163,36 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
         Yields:
             Tuple of (transaction object, session) for manual control.
         """
-        attributes = {}
+        attributes: dict[str, str | bool] = {}
         if isolation_level:
             attributes["db.isolation_level"] = str(isolation_level)
 
-        async with self._traced(
-            operation="managed_session",
-            context_manager=super().managed_session(isolation_level=isolation_level),
-            attributes=attributes,
-        ) as result:
-            yield result
+        if not self._tracer:
+            # No tracing available, delegate directly
+            async with super().managed_session(isolation_level=isolation_level) as result:
+                yield result
+            return
+
+        span: Span = self._tracer.start_span("uow.managed_session")
+        span.set_attribute("db.operation", "managed_session")
+
+        if attributes:
+            for key, value in attributes.items():
+                span.set_attribute(key, value)
+
+        try:
+            async with super().managed_session(isolation_level=isolation_level) as result:
+                yield result
+
+            span.set_status(Status(StatusCode.OK))
+
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
+
+        finally:
+            span.end()
 
     @asynccontextmanager
     async def query(
@@ -191,7 +211,7 @@ class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]
         Yields:
             Query object with repositories.
         """
-        attributes = {}
+        attributes: dict[str, str | bool] = {}
         if isolation_level:
             attributes["db.isolation_level"] = str(isolation_level)
 

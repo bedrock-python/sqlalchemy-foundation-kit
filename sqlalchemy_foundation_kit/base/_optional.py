@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
+import types
 
 
-def require_optional(module_name: str, extra_name: str) -> Any:
+def require_optional(module_name: str, extra_name: str) -> types.ModuleType:
     """Import an optional dependency or raise a helpful error.
 
     Args:
