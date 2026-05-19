@@ -3,7 +3,7 @@ name = "sqlalchemy-foundation-kit"
 dynamic = ["version"]
 description = "Foundation layer for SQLAlchemy-based services with UoW, session management, and observability"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Alex Shalaev", email = "shalaevad.alexey@yandex.ru" }]
 keywords = [
@@ -23,13 +23,14 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 dependencies = [
-    "sqlalchemy[asyncio]>=2.0.46,<3.0.0",
-    "pydantic>=2.10.6,<3.0.0",
+    "sqlalchemy[asyncio]>=2.0.35,<3.0.0",
+    "pydantic>=2.5.0,<3.0.0",
 ]
 
 [project.urls]
@@ -40,36 +41,36 @@ Changelog = "https://github.com/bedrock-python/sqlalchemy-foundation-kit/blob/ma
 
 [project.optional-dependencies]
 settings = [
-    "pydantic-settings>=2.7.1,<3.0.0",
+    "pydantic-settings>=2.3.0,<3.0.0",
 ]
 metrics = [
-    "prometheus-client>=0.21.0,<1.0.0",
+    "prometheus-client>=0.19.0,<1.0.0",
 ]
 orjson = [
-    "orjson>=3.10.17,<4.0.0",
+    "orjson>=3.9.0,<4.0.0",
 ]
 dishka = [
-    "dishka>=1.5.1,<2.0.0",
+    "dishka>=1.3.0,<2.0.0",
 ]
 dependency-injector = [
-    "dependency-injector>=4.43.0,<5.0.0",
+    "dependency-injector>=4.41.0,<5.0.0",
 ]
 telemetry = [
-    "opentelemetry-api>=1.30.0,<2.0.0",
-    "opentelemetry-sdk>=1.30.0,<2.0.0",
-    "opentelemetry-instrumentation-sqlalchemy>=0.51b0,<1.0.0",
-    "opentelemetry-instrumentation-asyncpg>=0.51b0,<1.0.0",
+    "opentelemetry-api>=1.20.0,<2.0.0",
+    "opentelemetry-sdk>=1.20.0,<2.0.0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.41b0,<1.0.0",
+    "opentelemetry-instrumentation-asyncpg>=0.41b0,<1.0.0",
 ]
 all = [
-    "pydantic-settings>=2.7.1,<3.0.0",
-    "prometheus-client>=0.21.0,<1.0.0",
-    "orjson>=3.10.17,<4.0.0",
-    "dishka>=1.5.1,<2.0.0",
-    "dependency-injector>=4.43.0,<5.0.0",
-    "opentelemetry-api>=1.30.0,<2.0.0",
-    "opentelemetry-sdk>=1.30.0,<2.0.0",
-    "opentelemetry-instrumentation-sqlalchemy>=0.51b0,<1.0.0",
-    "opentelemetry-instrumentation-asyncpg>=0.51b0,<1.0.0",
+    "pydantic-settings>=2.3.0,<3.0.0",
+    "prometheus-client>=0.19.0,<1.0.0",
+    "orjson>=3.9.0,<4.0.0",
+    "dishka>=1.3.0,<2.0.0",
+    "dependency-injector>=4.41.0,<5.0.0",
+    "opentelemetry-api>=1.20.0,<2.0.0",
+    "opentelemetry-sdk>=1.20.0,<2.0.0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.41b0,<1.0.0",
+    "opentelemetry-instrumentation-asyncpg>=0.41b0,<1.0.0",
 ]
 
 [dependency-groups]
@@ -112,7 +113,7 @@ build-backend = "hatchling.build"
 
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 files = ["sqlalchemy_foundation_kit"]
 mypy_path = ["."]
 check_untyped_defs = true
@@ -128,7 +129,7 @@ warn_unreachable = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "B", "N", "S", "C4", "DTZ", "SIM", "TRY", "PERF", "RUF", "UP", "ANN", "T20", "PTH", "PLC", "PLE", "PLW"]

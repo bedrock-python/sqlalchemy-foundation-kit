@@ -7,10 +7,9 @@ complex object creation and improve code readability.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from .._typing import SessionT
 from .manager import AsyncSessionManager
 
 if TYPE_CHECKING:
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
     from ..protocols import PostgresMetricsProtocol
 
 
-class AsyncSessionManagerBuilder[SessionT: AsyncSession]:
+class AsyncSessionManagerBuilder(Generic[SessionT]):
     """Builder for AsyncSessionManager construction.
 
     Provides a fluent API for configuring AsyncSessionManager with many optional

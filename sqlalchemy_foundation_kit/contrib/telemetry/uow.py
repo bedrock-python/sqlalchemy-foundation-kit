@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic
 
+from ..._typing import T
 from ...base._optional import require_optional
-from ...uow import AsyncSQLAlchemyUnitOfWork, AsyncUowTransaction, IsolationLevel
+from ...uow import AsyncSQLAlchemyUnitOfWork, IsolationLevel
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span, Tracer
@@ -26,7 +27,7 @@ except ImportError:
     trace = None  # type: ignore[assignment]
 
 
-class TracedAsyncUnitOfWork[T: AsyncUowTransaction](AsyncSQLAlchemyUnitOfWork[T]):
+class TracedAsyncUnitOfWork(AsyncSQLAlchemyUnitOfWork[T], Generic[T]):
     """Unit of Work with automatic OpenTelemetry tracing.
 
     Automatically creates spans for transaction() and query() operations,

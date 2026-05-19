@@ -8,12 +8,13 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Generic, cast
 
 from sqlalchemy import event
 from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
 
 if TYPE_CHECKING:
@@ -94,7 +95,7 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
     event.listen(engine.sync_engine, "handle_error", on_error)
 
 
-class AsyncSessionManager[SessionT: AsyncSession]:
+class AsyncSessionManager(Generic[SessionT]):
     """Manages async database sessions with configurable connection pooling.
 
     Supports two initialization approaches:

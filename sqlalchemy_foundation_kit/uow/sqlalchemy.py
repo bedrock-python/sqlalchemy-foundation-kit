@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Generic
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from .._typing import T
 from ..session.locks import try_advisory_xact_lock
 from .enums import IsolationLevel
 from .protocols import AsyncUnitOfWork, AsyncUowTransaction
@@ -143,7 +145,7 @@ class PostgresAdvisoryLockMixin:
         return await try_advisory_xact_lock(self.session, key)
 
 
-class AsyncSQLAlchemyUnitOfWork[T: AsyncUowTransaction](AsyncUnitOfWork[T]):
+class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
     """Base async SQLAlchemy Unit of Work.
 
     Provides transactional context for repository operations using SQLAlchemy AsyncSession.

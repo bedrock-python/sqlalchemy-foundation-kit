@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Protocol
+from typing import Any, Generic, Protocol
+
+from .._typing import T_co
 
 
 class AsyncUowTransaction(Protocol):
@@ -30,7 +32,7 @@ class SupportsAdvisoryLock(Protocol):
         ...
 
 
-class AsyncUnitOfWork[T: AsyncUowTransaction](Protocol):
+class AsyncUnitOfWork(Protocol, Generic[T_co]):
     """Provides transactional context for repository operations.
 
     Provides three modes of operation:
@@ -43,7 +45,7 @@ class AsyncUnitOfWork[T: AsyncUowTransaction](Protocol):
         self,
         isolation_level: str | None = None,
         flush_before_commit: bool | None = None,
-    ) -> AbstractAsyncContextManager[T]:
+    ) -> AbstractAsyncContextManager[T_co]:
         """Create a new transaction context with automatic commit/rollback.
 
         Args:
@@ -56,7 +58,7 @@ class AsyncUnitOfWork[T: AsyncUowTransaction](Protocol):
     def managed_session(
         self,
         isolation_level: str | None = None,
-    ) -> AbstractAsyncContextManager[tuple[T, Any]]:
+    ) -> AbstractAsyncContextManager[tuple[T_co, Any]]:
         """Create a session with manual transaction control.
 
         Unlike :meth:`transaction`, this does **NOT** auto-commit on success. The caller
@@ -74,5 +76,5 @@ class AsyncUnitOfWork[T: AsyncUowTransaction](Protocol):
             isolation_level: Optional transaction isolation level.
         """
 
-    def query(self, isolation_level: str | None = None) -> AbstractAsyncContextManager[T]:
+    def query(self, isolation_level: str | None = None) -> AbstractAsyncContextManager[T_co]:
         """Create a read-only query context without transaction management."""
