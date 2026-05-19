@@ -12,7 +12,19 @@ except ImportError:
     HAS_PROMETHEUS = False
 
 # Default buckets for connection checkout duration (seconds)
-CONNECTION_CHECKOUT_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+CONNECTION_CHECKOUT_BUCKETS: tuple[float, ...] = (
+    0.001,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+)
 
 
 def _check_prometheus() -> None:
@@ -106,7 +118,7 @@ class PostgresMetrics:
             self.connection_timeouts_total.inc()
 
 
-_PREFIX_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_PREFIX_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _make_metric_name(name: str, prefix: str | None = None) -> str:

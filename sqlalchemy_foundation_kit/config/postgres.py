@@ -6,14 +6,47 @@ from typing import Protocol
 
 
 class PasswordLike(Protocol):
-    """Protocol for secret string types (e.g., ``pydantic.SecretStr``).
+    """Protocol for secret string types.
 
-    Allows ``ConnectionSettingsProtocol.password`` to accept either a plain ``str``
-    or a SecretStr-like object without forcing pydantic as a dependency in the core layer.
+    Allows ``ConnectionSettingsProtocol.password`` to accept either plain ``str``
+    or SecretStr-like objects without forcing pydantic dependency in core layer.
+
+    Implementations:
+        - pydantic.SecretStr
+        - pydantic_settings.SecretStr
+        - str (plain string)
+
+    Examples:
+        Using with Pydantic SecretStr:
+            >>> from pydantic import SecretStr
+            >>> password: PasswordLike = SecretStr("secret123")
+            >>> password.get_secret_value()
+            'secret123'
+
+        Using with plain string (no get_secret_value method):
+            >>> password_plain: PasswordLike = "plain_password"
+            >>> # Note: plain str doesn't have get_secret_value()
+            >>> # Protocol usage requires runtime type checking
+
+    Security:
+        Always use SecretStr-like types in production to prevent accidental logging.
     """
 
     def get_secret_value(self) -> str:
-        """Return the underlying secret value as a plain string."""
+        """Return the underlying secret value as plain text.
+
+        Returns:
+            Decrypted/unwrapped secret value.
+
+        Security:
+            This method exposes the secret. Use carefully and never log the result.
+
+        Examples:
+            >>> from pydantic import SecretStr
+            >>> secret = SecretStr("my-password")
+            >>> secret.get_secret_value()
+            'my-password'
+        """
         ...
 
 

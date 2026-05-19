@@ -61,9 +61,9 @@ def _json_serializer(obj: object) -> str:
 
     try:
         return orjson.dumps(obj, default=_default_json_encoder).decode("utf-8")  # type: ignore[no-any-return]
-    except Exception:
-        logger.exception("Failed to serialize object to JSON")
-        raise
+    except (TypeError, ValueError) as e:
+        logger.exception("Failed to serialize %s to JSON", type(obj).__name__)
+        raise TypeError(f"Cannot serialize {type(obj).__name__} to JSON: {e}") from e
 
 
 def configure_orjson_serialization() -> dict[str, object]:

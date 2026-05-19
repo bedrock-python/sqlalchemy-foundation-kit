@@ -265,10 +265,10 @@ def test__json_serializer__orjson_dumps_fails__logs_and_raises() -> None:
     # Act & Assert
     with patch("sqlalchemy_foundation_kit.base.serialization.require_optional", return_value=mock_orjson):
         with patch("sqlalchemy_foundation_kit.base.serialization.logger") as mock_logger:
-            with pytest.raises(ValueError, match="Serialization error"):
+            with pytest.raises(TypeError, match="Cannot serialize dict to JSON"):
                 _json_serializer({"key": "value"})
 
-            mock_logger.exception.assert_called_once_with("Failed to serialize object to JSON")
+            mock_logger.exception.assert_called_once_with("Failed to serialize %s to JSON", "dict")
 
 
 def test__json_serializer__unsupported_object__raises_error() -> None:

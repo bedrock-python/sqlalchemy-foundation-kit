@@ -1,5 +1,23 @@
 # sqlalchemy-foundation-kit
 
+<div align="center">
+
+[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-foundation-kit?style=flat-square&logo=pypi&logoColor=white)](https://pypi.org/project/sqlalchemy-foundation-kit/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-foundation-kit?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/sqlalchemy-foundation-kit/)
+[![License](https://img.shields.io/github/license/bedrock-python/sqlalchemy-foundation-kit?style=flat-square)](https://github.com/bedrock-python/sqlalchemy-foundation-kit/blob/master/LICENSE)
+
+[![CI](https://img.shields.io/github/actions/workflow/status/bedrock-python/sqlalchemy-foundation-kit/ci.yml?branch=master&style=flat-square&logo=github&label=CI)](https://github.com/bedrock-python/sqlalchemy-foundation-kit/actions/workflows/ci.yml)
+[![codecov](https://img.shields.io/codecov/c/github/bedrock-python/sqlalchemy-foundation-kit?style=flat-square&logo=codecov&logoColor=white)](https://codecov.io/gh/bedrock-python/sqlalchemy-foundation-kit)
+[![Documentation](https://img.shields.io/badge/docs-github_pages-blue?style=flat-square&logo=materialformkdocs&logoColor=white)](https://bedrock-python.github.io/sqlalchemy-foundation-kit/)
+
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square)](https://github.com/astral-sh/ruff)
+[![Type checked: mypy](https://img.shields.io/badge/type_checker-mypy-blue?style=flat-square&logo=python)](http://mypy-lang.org/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square)](https://github.com/astral-sh/uv)
+
+</div>
+
+---
+
 **Production-ready foundation for SQLAlchemy-based async services with Unit of Work, session management, and observability**
 
 `sqlalchemy-foundation-kit` is a standalone, batteries-included foundation for building async SQLAlchemy microservices. It bundles everything you commonly re-implement for every service into a single library:

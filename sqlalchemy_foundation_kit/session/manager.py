@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, Generic, cast
 
 from sqlalchemy import event
 from sqlalchemy.exc import TimeoutError as SATimeoutError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
@@ -23,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DISPOSE_TIMEOUT_SECONDS = 30.0
+DEFAULT_DISPOSE_TIMEOUT_SECONDS: float = 30.0
 
 
 def _safe_metric_call(func: Callable[[], None], error_msg: str) -> None:
@@ -58,7 +63,7 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
         _safe_metric_call(
             lambda: metrics.record_pool_stats(
                 pool_size=pool.size() if hasattr(pool, "size") else 0,
-                pool_checked_out=pool.checkedout() if hasattr(pool, "checkedout") else 0,
+                pool_checked_out=(pool.checkedout() if hasattr(pool, "checkedout") else 0),
                 pool_overflow=pool.overflow() if hasattr(pool, "overflow") else 0,
             ),
             "Failed to record database pool stats",
@@ -177,12 +182,21 @@ class AsyncSessionManager(Generic[SessionT]):
         async with self._close_lock:
             if self._closed:
                 return
-            # Use shield so disposal runs even if the task is cancelled; timeout avoids indefinite hang.
-            await asyncio.wait_for(
-                asyncio.shield(self._engine.dispose()),
-                timeout=self._dispose_timeout,
-            )
-            self._closed = True
+
+            try:
+                # Use shield so disposal runs even if the task is cancelled; timeout avoids indefinite hang.
+                await asyncio.wait_for(
+                    asyncio.shield(self._engine.dispose()),
+                    timeout=self._dispose_timeout,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Engine disposal timed out after %.1f seconds. Some connections may not have closed cleanly.",
+                    self._dispose_timeout,
+                )
+            finally:
+                # Always mark as closed to prevent retry loops
+                self._closed = True
 
     def _ensure_not_closed(self) -> None:
         """Ensure that the manager is not closed."""
@@ -231,5 +245,8 @@ class AsyncSessionManager(Generic[SessionT]):
         """
         self._ensure_not_closed()
         options = {"isolation_level": isolation_level} if isolation_level else {}
-        async with self._session_maker(execution_options=options) as session, session.begin():
+        async with (
+            self._session_maker(execution_options=options) as session,
+            session.begin(),
+        ):
             yield session

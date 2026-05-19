@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HEALTHCHECK_QUERY = "SELECT 1"
+DEFAULT_HEALTHCHECK_QUERY: str = "SELECT 1"
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class RetryConfig:
     max_backoff_delay: float = 60.0
 
 
-DEFAULT_RETRY_CONFIG = RetryConfig()
+DEFAULT_RETRY_CONFIG: RetryConfig = RetryConfig()
 
 
 async def retry_async_connection(
@@ -45,16 +45,28 @@ async def retry_async_connection(
         config: Retry behavior configuration.
 
     Raises:
+        ValueError: If config.max_retries is less than 1.
         Exception: Re-raises the last exception when all attempts fail.
     """
+    if config.max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {config.max_retries}")
+
     for attempt in range(config.max_retries):
         try:
             await connect_func()
         except Exception:
             if attempt == config.max_retries - 1:
-                logger.exception("%s connection failed after %d attempts", service_name, config.max_retries)
+                logger.exception(
+                    "%s connection failed after %d attempts",
+                    service_name,
+                    config.max_retries,
+                )
                 raise
-            logger.warning("%s connection attempt %d failed, retrying...", service_name, attempt + 1)
+            logger.warning(
+                "%s connection attempt %d failed, retrying...",
+                service_name,
+                attempt + 1,
+            )
             delay = min(config.retry_delay * (2**attempt), config.max_backoff_delay)
             await asyncio.sleep(delay)
         else:

@@ -28,7 +28,9 @@ def instrument_sqlalchemy(engine: Any | None = None, **kwargs: Any) -> None:
         >>> instrument_sqlalchemy(engine=engine)
     """
     try:
-        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor  # noqa: PLC0415
+        from opentelemetry.instrumentation.sqlalchemy import (  # noqa: PLC0415
+            SQLAlchemyInstrumentor,
+        )
     except ImportError as e:
         raise ImportError(
             "opentelemetry-instrumentation-sqlalchemy not installed. "
@@ -80,7 +82,9 @@ def instrument_asyncpg(**kwargs: Any) -> None:
         >>> instrument_asyncpg()
     """
     try:
-        from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor  # noqa: PLC0415
+        from opentelemetry.instrumentation.asyncpg import (  # noqa: PLC0415
+            AsyncPGInstrumentor,
+        )
     except ImportError as e:
         raise ImportError(
             "opentelemetry-instrumentation-asyncpg not installed. "

@@ -10,7 +10,13 @@ Public API for base functionality. Import directly from submodules for clarity:
 
 from __future__ import annotations
 
-from .engine import PoolClassStr, PoolRegistry, build_engine_kwargs, register_pool_class, resolve_pool_class
+from .engine import (
+    PoolClassStr,
+    PoolRegistry,
+    build_engine_kwargs,
+    register_pool_class,
+    resolve_pool_class,
+)
 from .metadata import load_orm_metadata
 from .models import (
     DB_NAMING_CONVENTION,

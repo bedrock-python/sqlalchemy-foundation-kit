@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 from sqlalchemy.types import TypeEngine
 
-DB_NAMING_CONVENTION = {
+DB_NAMING_CONVENTION: dict[str, str] = {
     "ix": "%(column_0_label)s_idx",
     "uq": "%(table_name)s_%(column_0_name)s_key",
     "ck": "%(table_name)s_%(constraint_name)s_check",

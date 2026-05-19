@@ -59,7 +59,11 @@ class PoolSettings(BaseModel):
     max_overflow: int = Field(default=20, ge=0, description="Additional connections when pool is exhausted")
     pre_ping: bool = Field(default=True, description="Check connection health before use (pre-ping)")
     recycle: int = Field(default=3600, ge=-1, description="Recycle connections after N seconds")
-    timeout: float = Field(default=30.0, ge=0, description="Seconds to wait before giving up on getting connection")
+    timeout: float = Field(
+        default=30.0,
+        ge=0,
+        description="Seconds to wait before giving up on getting connection",
+    )
 
     @model_validator(mode="after")
     def _validate_pool_settings(self) -> PoolSettings:
@@ -123,7 +127,8 @@ class BasePostgresConfig(BaseSettings):
     application_name: str = Field(description="Application name for PostgreSQL")
     db_schema: str | None = Field(default=None, description="PostgreSQL schema name")
     use_orjson_serialization: bool = Field(
-        default=True, description="Use orjson for JSON serialization (requires orjson installed)"
+        default=True,
+        description="Use orjson for JSON serialization (requires orjson installed)",
     )
     jit: PostgresJit | None = Field(default="off", description="JIT setting (off/on)")
     metrics_enabled: bool = Field(default=False, description="Enable PostgreSQL metrics")

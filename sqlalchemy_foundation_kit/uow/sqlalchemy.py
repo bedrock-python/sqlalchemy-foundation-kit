@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -21,7 +22,9 @@ logger = logging.getLogger(__name__)
 _VALID_ISOLATION_LEVELS: frozenset[str] = frozenset(item.value for item in IsolationLevel)
 
 
-def normalize_isolation_level(isolation_level: IsolationLevel | str | None) -> str | None:
+def normalize_isolation_level(
+    isolation_level: IsolationLevel | str | None,
+) -> str | None:
     """Normalize isolation_level to a valid PostgreSQL string or None.
 
     Accepts both enum members and strings. Strings may use either underscores
@@ -71,21 +74,37 @@ async def apply_isolation_level(
 ) -> None:
     """Apply isolation level to an async session's connection.
 
-    This is a DRY utility to eliminate duplication of isolation level application logic
-    across different session/transaction contexts.
+    **Implementation Detail**:
+    We use ``run_sync()`` because SQLAlchemy's ``execution_options()`` is a
+    synchronous method that configures the underlying DBAPI connection object.
+    We must bridge from async context to sync method via ``run_sync()``.
+
+    This is a DRY utility to eliminate duplication of isolation level application
+    logic across ``transaction()``, ``managed_session()``, and ``query()`` methods.
 
     Args:
         session: SQLAlchemy AsyncSession to configure.
         isolation_level: Desired isolation level (enum, string, or None).
 
+    Raises:
+        ValueError: If isolation_level is not supported (raised by normalize_isolation_level).
+
     Examples:
         >>> async with session_maker() as session:
         ...     await apply_isolation_level(session, IsolationLevel.SERIALIZABLE)
-        ...     # Now session connection has SERIALIZABLE isolation level
+        ...     result = await session.execute(select(User))
+        ...     # Query runs with SERIALIZABLE isolation level
+
+        Using string isolation level:
+        >>> await apply_isolation_level(session, "READ COMMITTED")
+
+        No-op when None:
+        >>> await apply_isolation_level(session, None)  # Does nothing
     """
     normalized = normalize_isolation_level(isolation_level)
     if normalized is not None:
         conn = await session.connection()
+        # run_sync bridges async → sync for DBAPI-level configuration
         await conn.run_sync(lambda c: c.execution_options(isolation_level=normalized))
 
 
@@ -345,8 +364,8 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
             try:
                 uow = self._transaction_factory(session)
                 yield uow, session
-            except Exception:
-                # Auto-rollback on exception
+            except (Exception, asyncio.CancelledError):
+                # Auto-rollback on exception OR cancellation
                 await session.rollback()
                 raise
             # User must call session.commit() or session.rollback() explicitly

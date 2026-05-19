@@ -17,7 +17,12 @@ if TYPE_CHECKING:
     from ..config import PoolSettingsProtocol
 
 PoolClassStr = Literal[
-    "null", "queue", "singleton_thread", "async_adapted_queue", "fallback_async_adapted_queue", "static"
+    "null",
+    "queue",
+    "singleton_thread",
+    "async_adapted_queue",
+    "fallback_async_adapted_queue",
+    "static",
 ]
 
 

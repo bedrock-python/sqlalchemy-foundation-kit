@@ -230,16 +230,16 @@ async def test__retry_async_connection__all_attempts_fail__logs_exception() -> N
 
 
 @pytest.mark.asyncio
-async def test__retry_async_connection__zero_retries__does_not_call_connect() -> None:
+async def test__retry_async_connection__zero_retries__raises_value_error() -> None:
     # Arrange
     connect_func = AsyncMock(side_effect=Exception("Failed"))
     config = RetryConfig(max_retries=0)
 
-    # Act
-    with patch("sqlalchemy_foundation_kit.session.retry.asyncio.sleep"):
+    # Act & Assert
+    with pytest.raises(ValueError, match="max_retries must be >= 1, got 0"):
         await retry_async_connection(connect_func, "test-service", config)
 
-    # Assert
+    # Assert connect was never called due to validation
     connect_func.assert_not_called()
 
 

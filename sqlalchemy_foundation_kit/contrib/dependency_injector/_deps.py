@@ -29,4 +29,9 @@ def check_dependency_injector() -> None:
         )
 
 
-__all__ = ["HAS_DEPENDENCY_INJECTOR", "check_dependency_injector", "containers", "providers"]
+__all__ = [
+    "HAS_DEPENDENCY_INJECTOR",
+    "check_dependency_injector",
+    "containers",
+    "providers",
+]

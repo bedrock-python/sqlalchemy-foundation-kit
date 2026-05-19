@@ -26,3 +26,8 @@ class AsyncCConnection(asyncpg.Connection):
             A unique string ID including the prefix and a UUID.
         """
         return f"__asyncpg_{prefix}_{uuid.uuid4()}__"
+
+
+__all__ = [
+    "AsyncCConnection",
+]
