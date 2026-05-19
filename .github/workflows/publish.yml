@@ -2,7 +2,8 @@ name: Publish
 
 on:
   release:
-    types: [published]
+    types: [published, created]
+  workflow_dispatch:
 
 permissions:
   id-token: write   # Trusted Publisher (PyPI OIDC)
