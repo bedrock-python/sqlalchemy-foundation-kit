@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.1.0...sqlalchemy-foundation-kit-v0.1.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **ci:** add workflow_dispatch and created trigger to publish workflow ([142aef5](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/142aef5040777b31509e8d7b26f01774e8f22432))
+
 ## 0.1.0 (2026-05-19)
 
 
