@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.1.0...sqlalchemy-foundation-kit-v0.2.0) (2026-08-28)
+
+
+### Features
+
+* **uow:** add savepoint() to AsyncSQLAlchemyUowTransaction ([#6](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/6)) ([c46d881](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/c46d881052b7476211c31f4adc6058d4f5500b6a)), closes [#5](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/5)
+
+
+### Bug Fixes
+
+* **ci:** add workflow_dispatch and created trigger to publish workflow ([142aef5](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/142aef5040777b31509e8d7b26f01774e8f22432))
+
 ## 0.1.0 (2026-05-19)
 
 
