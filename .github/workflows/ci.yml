@@ -43,7 +43,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --group dev --all-extras
       - run: uv run pytest -m integration --cov=sqlalchemy_foundation_kit --cov-report=xml --cov-fail-under=90
-      - uses: codecov/codecov-action@v6
+      - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
