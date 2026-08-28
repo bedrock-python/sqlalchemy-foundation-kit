@@ -129,6 +129,37 @@ class AsyncSQLAlchemyUowTransaction(AsyncUowTransaction):
         """Get the underlying SQLAlchemy async session."""
         return self._session
 
+    @asynccontextmanager
+    async def savepoint(self) -> AsyncIterator[None]:
+        """Open a savepoint whose failure does not poison the surrounding transaction.
+
+        On PostgreSQL a single failed statement aborts the whole transaction: every
+        later statement on the connection fails until rollback, including the ones
+        that would record which step failed. A savepoint (``SAVEPOINT`` /
+        ``ROLLBACK TO SAVEPOINT``) narrows that blast radius to this block.
+
+        On exception the block's changes are rolled back, the exception propagates
+        unchanged — the caller decides what a failed step means — and the surrounding
+        transaction stays usable. On success the savepoint is released and its changes
+        remain part of the surrounding transaction, committed or rolled back with it.
+        Savepoints nest: a ``savepoint()`` inside another rolls back only the inner block.
+
+        Intended for use inside :meth:`AsyncSQLAlchemyUnitOfWork.transaction` or
+        :meth:`AsyncSQLAlchemyUnitOfWork.managed_session`.
+
+        Example:
+            async with uow.transaction() as tx:
+                for event in await tx.outbox.list_pending():
+                    try:
+                        async with tx.savepoint():
+                            await tx.outbox.process(event)
+                    except Exception as exc:
+                        await tx.outbox.mark_failed(event, reason=str(exc))
+                # Commits processed events and failure records together
+        """
+        async with self._session.begin_nested():
+            yield
+
 
 class PostgresAdvisoryLockMixin:
     """Mixin providing PostgreSQL advisory lock support for UoW transactions.

@@ -122,25 +122,48 @@ async with uow.managed_session() as (tx, session):
         raise
 ```
 
-### Nested Transactions (Savepoints)
+### Savepoints (Partial Failure Inside a Transaction)
 
-SQLAlchemy supports nested transactions via savepoints:
+On PostgreSQL a single failed statement aborts the *whole* transaction: every later statement on
+the connection fails until rollback — including the ones you would use to record which step failed.
+A batch that processes independent items in one transaction therefore loses all of them to the
+first bad one, and cannot even write down which one it was.
+
+`tx.savepoint()` narrows that blast radius to a block. On exception the block's changes are rolled
+back, the exception propagates so *you* decide what a failed item means, and the surrounding
+transaction stays usable:
 
 ```python
 async with uow.transaction() as tx:
-    # Outer transaction
-    user = await tx.users.create(email="user@example.com")
-    
-    # Try nested operation with savepoint
-    try:
-        async with tx.session.begin_nested():
-            # This might fail
-            await tx.orders.create(user_id=user.id, total=-100)
-    except Exception:
-        # Nested transaction rolled back, outer continues
-        pass
-    
-    # Outer transaction still succeeds
+    for event in await tx.outbox.list_pending():
+        try:
+            async with tx.savepoint():
+                await handle(event)
+                await tx.outbox.mark_processed(event.id)
+        except Exception as exc:
+            # Runs on a healthy transaction: only the savepoint was rolled back, not the batch
+            await tx.outbox.mark_failed(event.id, reason=str(exc))
+    # Processed events and failure records are committed together
+```
+
+`savepoint()` is available on every `AsyncSQLAlchemyUowTransaction` — no mixin required — and
+yields nothing, so application code never touches SQLAlchemy. Use it inside `transaction()` or
+`managed_session()`. Savepoints nest: a `savepoint()` inside another rolls back only the inner block.
+
+If your use cases type their transaction as a `Protocol` rather than the concrete class, declare
+the capability with `SupportsSavepoint`, the same way `SupportsAdvisoryLock` works:
+
+```python
+from typing import Protocol
+from sqlalchemy_foundation_kit import SupportsSavepoint
+
+class OutboxTransaction(SupportsSavepoint, Protocol):
+    outbox: OutboxRepository
+
+async def drain(tx: OutboxTransaction) -> None:
+    for event in await tx.outbox.list_pending():
+        async with tx.savepoint():
+            ...
 ```
 
 ## Advisory Locks

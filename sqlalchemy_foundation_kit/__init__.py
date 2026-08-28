@@ -58,6 +58,7 @@ from .uow import (
     IsolationLevel,
     PostgresAdvisoryLockMixin,
     SupportsAdvisoryLock,
+    SupportsSavepoint,
 )
 
 try:
@@ -109,6 +110,7 @@ __all__ = [  # noqa: RUF022
     "IsolationLevel",
     "PostgresAdvisoryLockMixin",
     "SupportsAdvisoryLock",
+    "SupportsSavepoint",
     # Version
     "__version__",
 ]
