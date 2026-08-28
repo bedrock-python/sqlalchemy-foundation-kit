@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .enums import IsolationLevel
-from .protocols import AsyncUnitOfWork, AsyncUowTransaction, SupportsAdvisoryLock
+from .protocols import AsyncUnitOfWork, AsyncUowTransaction, SupportsAdvisoryLock, SupportsSavepoint
 from .sqlalchemy import (
     AsyncSQLAlchemyUnitOfWork,
     AsyncSQLAlchemyUowTransaction,
@@ -18,4 +18,5 @@ __all__ = [
     "IsolationLevel",
     "PostgresAdvisoryLockMixin",
     "SupportsAdvisoryLock",
+    "SupportsSavepoint",
 ]

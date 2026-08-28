@@ -32,6 +32,24 @@ class SupportsAdvisoryLock(Protocol):
         ...
 
 
+class SupportsSavepoint(Protocol):
+    """Capability protocol for transactions supporting savepoints.
+
+    Use this when a use case must keep going after one step fails — for example,
+    processing a batch of independent items where a bad item must not take the
+    rest of the batch (or the record of its own failure) down with it.
+    """
+
+    def savepoint(self) -> AbstractAsyncContextManager[None]:
+        """Open a nested block whose failure does not poison the surrounding transaction.
+
+        On exception the block's changes are rolled back, the exception propagates
+        unchanged, and the surrounding transaction remains usable. On success the
+        block's changes stay part of the surrounding transaction.
+        """
+        ...
+
+
 class AsyncUnitOfWork(Protocol, Generic[T_co]):
     """Provides transactional context for repository operations.
 

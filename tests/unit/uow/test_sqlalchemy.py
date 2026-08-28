@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy_foundation_kit.uow.enums import IsolationLevel
+from sqlalchemy_foundation_kit.uow.protocols import SupportsSavepoint
 from sqlalchemy_foundation_kit.uow.sqlalchemy import (
     AsyncSQLAlchemyUnitOfWork,
     AsyncSQLAlchemyUowTransaction,
@@ -210,6 +211,83 @@ def test__uow_transaction__session_property__returns_session() -> None:
 
     # Assert
     assert session is mock_session
+
+
+def _mock_nested_transaction() -> AsyncMock:
+    nested = AsyncMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=False)
+    return nested
+
+
+@pytest.mark.asyncio
+async def test__uow_transaction__savepoint__enters_nested_transaction() -> None:
+    # Arrange
+    mock_nested = _mock_nested_transaction()
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.begin_nested = Mock(return_value=mock_nested)
+    transaction = AsyncSQLAlchemyUowTransaction(mock_session)
+
+    # Act
+    async with transaction.savepoint() as value:
+        mock_nested.__aenter__.assert_awaited_once()
+        mock_nested.__aexit__.assert_not_awaited()
+
+    # Assert
+    assert value is None
+    mock_session.begin_nested.assert_called_once_with()
+    mock_nested.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test__uow_transaction__savepoint__exception__propagates_and_exits_nested() -> None:
+    # Arrange
+    mock_nested = _mock_nested_transaction()
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.begin_nested = Mock(return_value=mock_nested)
+    transaction = AsyncSQLAlchemyUowTransaction(mock_session)
+    error = ValueError("bad item")
+
+    # Act & Assert
+    with pytest.raises(ValueError) as exc_info:
+        async with transaction.savepoint():
+            raise error
+
+    assert exc_info.value is error
+    exc_type, exc_value, _ = mock_nested.__aexit__.call_args.args
+    assert exc_type is ValueError
+    assert exc_value is error
+
+
+@pytest.mark.asyncio
+async def test__uow_transaction__savepoint__usable_through_capability_protocol() -> None:
+    # Arrange
+    mock_nested = _mock_nested_transaction()
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.begin_nested = Mock(return_value=mock_nested)
+    transaction: SupportsSavepoint = AsyncSQLAlchemyUowTransaction(mock_session)
+
+    async def use_case(tx: SupportsSavepoint, items: list[int]) -> tuple[list[int], list[int]]:
+        # Application-layer code: sees only the capability, never SQLAlchemy.
+        done: list[int] = []
+        failed: list[int] = []
+        for item in items:
+            try:
+                async with tx.savepoint():
+                    if item == 0:
+                        raise ZeroDivisionError
+                done.append(item)
+            except ZeroDivisionError:
+                failed.append(item)
+        return done, failed
+
+    # Act
+    done, failed = await use_case(transaction, [1, 2, 0, 4])
+
+    # Assert
+    assert done == [1, 2, 4]
+    assert failed == [0]
+    assert mock_session.begin_nested.call_count == 4
 
 
 # ============================================================================

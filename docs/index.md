@@ -205,7 +205,7 @@ graph TB
 ### Core (always available)
 
 - **Session Management**: `AsyncSessionManager`, `AsyncCConnection`, `RetryConfig`
-- **Unit of Work**: `AsyncUnitOfWork`, `AsyncSQLAlchemyUnitOfWork`, `IsolationLevel`
+- **Unit of Work**: `AsyncUnitOfWork`, `AsyncSQLAlchemyUnitOfWork`, `IsolationLevel`, `SupportsSavepoint`
 - **Base ORM**: `Base`, `BaseTable`, `DatetimeColumnsMixin`, `UnConstrainedEnum`, `PydanticJSONB`
 - **Protocols**: `PostgresSettingsProtocol`, `PostgresMetricsProtocol`, `AsyncUowTransaction`
 - **Utilities**: `build_engine_kwargs`, `resolve_pool_class`, `load_orm_metadata`

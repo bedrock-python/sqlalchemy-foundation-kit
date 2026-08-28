@@ -30,6 +30,7 @@ The main `sqlalchemy_foundation_kit` module exports all core functionality.
         - IsolationLevel
         - PostgresAdvisoryLockMixin
         - SupportsAdvisoryLock
+        - SupportsSavepoint
         - try_advisory_xact_lock
         - retry_async_connection
         - RetryConfig
@@ -205,6 +206,7 @@ Unit of Work pattern for transactional consistency.
         - AsyncUnitOfWork
         - AsyncUowTransaction
         - SupportsAdvisoryLock
+        - SupportsSavepoint
 
 ::: sqlalchemy_foundation_kit.uow.sqlalchemy
     options:

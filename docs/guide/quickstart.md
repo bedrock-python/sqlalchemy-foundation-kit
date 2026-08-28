@@ -370,7 +370,7 @@ if __name__ == "__main__":
 ## Next Steps
 
 - **[Configuration](configuration.md)** — Learn about all configuration options
-- **[Advanced Usage](advanced.md)** — Metrics, telemetry, DI, advisory locks
+- **[Advanced Usage](advanced.md)** — Metrics, telemetry, DI, savepoints, advisory locks
 - **[API Reference](../reference/index.md)** — Complete API documentation
 
 ## Common Patterns

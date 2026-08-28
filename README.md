@@ -212,7 +212,7 @@ class CreateUserUseCase:
 ### Core (always available)
 - **Session Management**: `AsyncSessionManager`, `AsyncCConnection`
 - **Base ORM**: `Base`, `BaseTable`, `DatetimeColumnsMixin`, `UnConstrainedEnum`, `PydanticJSONB`
-- **Unit of Work**: `AsyncUnitOfWork`, `AsyncSQLAlchemyUnitOfWork`, `IsolationLevel`
+- **Unit of Work**: `AsyncUnitOfWork`, `AsyncSQLAlchemyUnitOfWork`, `IsolationLevel`, `SupportsSavepoint`
 - **Protocols**: `PostgresSettingsProtocol`, `PostgresMetricsProtocol`
 - **Utilities**: `build_engine_kwargs`, `resolve_pool_class`, `load_orm_metadata`
 
