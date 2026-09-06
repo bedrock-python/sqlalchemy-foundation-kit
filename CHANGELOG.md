@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.2.0...sqlalchemy-foundation-kit-v0.2.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* the defects the agents page turned up ([#21](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/21)) ([9548c72](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/9548c72670696dd68e0eeec1f0ae4ad896fa62d6))
+
 ## [0.2.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.1.0...sqlalchemy-foundation-kit-v0.2.0) (2026-08-28)
 
 
