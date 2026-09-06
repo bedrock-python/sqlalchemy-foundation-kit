@@ -1,5 +1,7 @@
 """PostgreSQL advisory locks (async)."""
 
+import hashlib
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,10 @@ async def try_advisory_xact_lock(session: AsyncSession, key: str | int) -> bool:
     Uses ``pg_try_advisory_xact_lock``: non-blocking, released automatically
     at transaction end. String keys are hashed to integers. The key is then
     truncated to signed 64-bit as Postgres expects.
+
+    A string key produces the same lock in every process, on every host and in
+    every release of the library, so two replicas of a service asking for
+    ``"nightly-rollup"`` contend for one lock.
 
     Args:
         session: SQLAlchemy AsyncSession within an active transaction.
@@ -31,13 +37,35 @@ async def try_advisory_xact_lock(session: AsyncSession, key: str | int) -> bool:
         ...             await session.commit()
     """
     # Convert string keys to integers via hashing
-    int_key = hash(key) if isinstance(key, str) else key
+    int_key = _hash_lock_key(key) if isinstance(key, str) else key
 
     result = await session.execute(
         text("SELECT pg_try_advisory_xact_lock(:k)"),
         {"k": _to_signed64(int_key)},
     )
     return bool(result.scalar())
+
+
+def _hash_lock_key(key: str) -> int:
+    """Hash a string lock key into the PostgreSQL bigint range, reproducibly.
+
+    Python's built-in ``hash()`` is unusable here: string hashing is salted per
+    interpreter, so the same key becomes a different lock in every process and two
+    replicas of the same service lock nothing against each other. BLAKE2b is
+    deterministic, so the key is stable across processes, hosts and restarts.
+
+    Args:
+        key: Lock identifier.
+
+    Returns:
+        A signed 64-bit integer suitable for ``pg_try_advisory_xact_lock``.
+
+    Examples:
+        >>> _hash_lock_key("nightly-rollup") == _hash_lock_key("nightly-rollup")
+        True
+    """
+    digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=True)
 
 
 def _to_signed64(key: int) -> int:
