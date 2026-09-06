@@ -689,7 +689,7 @@ async def test__async_session_manager__get_transaction__yields_session() -> None
 
 
 @pytest.mark.asyncio
-async def test__async_session_manager__get_transaction__with_isolation_level__passes_options() -> None:
+async def test__async_session_manager__get_transaction__with_isolation_level__sets_it_on_the_connection() -> None:
     # Arrange
     mock_session = AsyncMock(spec=AsyncSession)
 
@@ -716,12 +716,13 @@ async def test__async_session_manager__get_transaction__with_isolation_level__pa
     async with manager.get_transaction(isolation_level="SERIALIZABLE"):
         pass
 
-    # Assert
-    mock_maker_obj.assert_called_with(execution_options={"isolation_level": "SERIALIZABLE"})
+    # Assert: the level travels with the connection checkout, never to the session factory
+    mock_maker_obj.assert_called_once_with()
+    mock_session.connection.assert_awaited_once_with(execution_options={"isolation_level": "SERIALIZABLE"})
 
 
 @pytest.mark.asyncio
-async def test__async_session_manager__get_transaction__no_isolation_level__no_options() -> None:
+async def test__async_session_manager__get_transaction__no_isolation_level__no_connection_options() -> None:
     # Arrange
     mock_session = AsyncMock(spec=AsyncSession)
 
@@ -749,10 +750,25 @@ async def test__async_session_manager__get_transaction__no_isolation_level__no_o
         pass
 
     # Assert
-    # Check that it was called with empty execution_options
-    assert mock_maker_obj.call_count == 1
-    call_kwargs = mock_maker_obj.call_args[1] if mock_maker_obj.call_args[1] else {}
-    assert call_kwargs.get("execution_options") == {}
+    mock_maker_obj.assert_called_once_with()
+    mock_session.connection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test__async_session_manager__get_transaction__real_session_maker__opens_a_transaction() -> None:
+    # Arrange: a real engine and sessionmaker. Nothing here reaches the database -- the
+    # session is opened, begun and committed without ever checking out a connection --
+    # but the session is constructed for real, which is where get_transaction used to
+    # raise TypeError before the caller saw anything.
+    manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager("postgresql+asyncpg://u:p@127.0.0.1:1/db")
+
+    # Act
+    async with manager.get_transaction() as session:
+        in_transaction = session.in_transaction()
+
+    # Assert
+    assert in_transaction is True
+    await manager.aclose()
 
 
 @pytest.mark.asyncio
