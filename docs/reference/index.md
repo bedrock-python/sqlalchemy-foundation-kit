@@ -1,3 +1,7 @@
+---
+copy_page: false
+---
+
 # API Reference
 
 Complete API documentation auto-generated from source code.

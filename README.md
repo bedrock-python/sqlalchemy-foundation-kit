@@ -31,6 +31,14 @@
 
 Only `sqlalchemy[asyncio]` and `pydantic` are required by default — everything else is an opt-in extra.
 
+> [!TIP]
+> **Building this with an AI assistant?** Hand it
+> **[one page](https://bedrock-python.github.io/sqlalchemy-foundation-kit/agents/)** instead of the
+> whole site: the public API surface, the session-lifetime and transaction-ownership rules that
+> break code when they are broken, the mistakes models actually make with a Unit of Work, and a
+> map of which page to fetch for the rest. Every docs page is also served as raw Markdown at its
+> own URL, and a **Copy page** button at the top of each one hands it straight to a chat window.
+
 ## Key Features
 
 ✅ **Single dependency** — All foundation pieces in one place  
@@ -368,6 +376,8 @@ graph LR
 ## Documentation
 
 Full documentation is available at [https://bedrock-python.github.io/sqlalchemy-foundation-kit/](https://bedrock-python.github.io/sqlalchemy-foundation-kit/)
+
+- [For AI agents](https://bedrock-python.github.io/sqlalchemy-foundation-kit/agents/) — the whole library on one page, for a coding assistant
 
 ## License
 
