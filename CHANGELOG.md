@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.2.0...sqlalchemy-foundation-kit-v0.2.1) (2026-09-06)
+
+
+### Documentation
+
+* org-wide security policy and code of conduct ([#14](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/14)) ([8c1415e](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/8c1415ea916c267550ba21a3bd14b608de72c8fe))
+
 ## [0.2.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.1.0...sqlalchemy-foundation-kit-v0.2.0) (2026-08-28)
 
 
