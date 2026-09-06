@@ -63,35 +63,53 @@ settings = Settings()
 
 ### Environment Variables
 
-`BasePostgresConfig` inherits from `pydantic_settings.BaseSettings`, so it automatically loads from environment variables:
+`BasePostgresConfig` declares no `model_config` of its own, so it reads no prefix and no
+delimiter by itself. Environment variables reach it through the `BaseSettings` that holds
+it, which is where `env_nested_delimiter` is set:
+
+```python
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_nested_delimiter="__")
+
+    postgres: BasePostgresConfig
+```
+
+Every level of nesting is then one `__`, the field name included — `postgres` is a field
+like any other, so `postgres.connection.host` is `POSTGRES__CONNECTION__HOST`:
 
 ```bash
 # Connection settings
-POSTGRES_CONNECTION__HOST=db.example.com
-POSTGRES_CONNECTION__PORT=5432
-POSTGRES_CONNECTION__USER=postgres
-POSTGRES_CONNECTION__PASSWORD=secret123
-POSTGRES_CONNECTION__DATABASE=mydb
+POSTGRES__CONNECTION__HOST=db.example.com
+POSTGRES__CONNECTION__PORT=5432
+POSTGRES__CONNECTION__USER=postgres
+POSTGRES__CONNECTION__PASSWORD=secret123
+POSTGRES__CONNECTION__DATABASE=mydb
 
 # Pool settings
-POSTGRES_POOL__SIZE=20
-POSTGRES_POOL__MAX_OVERFLOW=30
-POSTGRES_POOL__TIMEOUT=45.0
-POSTGRES_POOL__PRE_PING=true
-POSTGRES_POOL__RECYCLE=1800
+POSTGRES__POOL__SIZE=20
+POSTGRES__POOL__MAX_OVERFLOW=30
+POSTGRES__POOL__TIMEOUT=45.0
+POSTGRES__POOL__PRE_PING=true
+POSTGRES__POOL__RECYCLE=1800
 
 # Query settings
-POSTGRES_QUERY__ECHO=false
-POSTGRES_QUERY__STATEMENT_CACHE_SIZE=0
-POSTGRES_QUERY__ISOLATION_LEVEL="READ COMMITTED"
+POSTGRES__QUERY__ECHO=false
+POSTGRES__QUERY__STATEMENT_CACHE_SIZE=0
+POSTGRES__QUERY__ISOLATION_LEVEL="READ COMMITTED"
 
 # Top-level settings
-POSTGRES_APPLICATION_NAME=my-service
-POSTGRES_DB_SCHEMA=public
-POSTGRES_USE_ORJSON_SERIALIZATION=true
-POSTGRES_JIT=off
-POSTGRES_METRICS_ENABLED=true
+POSTGRES__APPLICATION_NAME=my-service
+POSTGRES__DB_SCHEMA=public
+POSTGRES__USE_ORJSON_SERIALIZATION=true
+POSTGRES__JIT=off
+POSTGRES__METRICS_ENABLED=true
 ```
+
+`BasePostgresMigrationsConfig` is exactly this settings class, ready made: it holds a
+`postgres: BasePostgresConfig` with `env_nested_delimiter="__"` and `extra="ignore"`
+already set, and reads the same names.
 
 **Custom prefix:**
 
@@ -107,7 +125,7 @@ class Settings(BaseSettings):
     postgres: BasePostgresConfig
 ```
 
-Now use `MY_APP_POSTGRES_CONNECTION__HOST` instead of `POSTGRES_CONNECTION__HOST`.
+Now use `MY_APP_POSTGRES__CONNECTION__HOST` instead of `POSTGRES__CONNECTION__HOST`.
 
 ### DSN Generation
 

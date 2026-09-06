@@ -145,7 +145,7 @@ async def main():
         # Auto-rollback on exception
     
     # Graceful shutdown (wait for connections to close)
-    await session_manager.close()
+    await session_manager.aclose()
 ```
 
 ### 4. Use Unit of Work Pattern
@@ -360,7 +360,7 @@ async def main():
         print(f"Error: {e}")
     
     # Cleanup
-    await session_manager.close()
+    await session_manager.aclose()
 
 if __name__ == "__main__":
     import asyncio
@@ -377,22 +377,36 @@ if __name__ == "__main__":
 
 ### Health Check
 
+The library ships the query (`DEFAULT_HEALTHCHECK_QUERY`), not a health-check method —
+run it on a session:
+
 ```python
+from sqlalchemy import text
+from sqlalchemy_foundation_kit import DEFAULT_HEALTHCHECK_QUERY
+
 async def health_check():
     """Check database connectivity."""
-    is_healthy = await session_manager.healthcheck()
-    return {"database": "healthy" if is_healthy else "unhealthy"}
+    try:
+        async with session_manager.get_session() as session:
+            await session.execute(text(DEFAULT_HEALTHCHECK_QUERY))
+    except Exception:
+        return {"database": "unhealthy"}
+    return {"database": "healthy"}
 ```
 
 ### Graceful Shutdown
 
+The disposal timeout belongs to the manager, not to the call that closes it:
+
 ```python
 import signal
+
+session_manager = create_async_session_manager(settings.postgres, dispose_timeout=30.0)
 
 async def shutdown(session_manager: AsyncSessionManager):
     """Graceful shutdown handler."""
     print("Shutting down...")
-    await session_manager.close(timeout=30.0)
+    await session_manager.aclose()
     print("Database connections closed")
 
 # Register signal handler
@@ -405,16 +419,28 @@ loop.add_signal_handler(
 
 ### Retry on Connection Error
 
-```python
-from sqlalchemy_foundation_kit import retry_async_connection, DEFAULT_RETRY_CONFIG
+`retry_async_connection` is a coroutine function, not a decorator. It retries a callable
+that establishes or tests a connection — typically once, at startup:
 
-@retry_async_connection(config=DEFAULT_RETRY_CONFIG)
-async def fetch_user(session, user_id: UUID):
-    """Retries on connection errors."""
-    result = await session.execute(
-        select(UserDB).where(UserDB.id == user_id)
+```python
+from sqlalchemy import text
+from sqlalchemy_foundation_kit import (
+    DEFAULT_HEALTHCHECK_QUERY,
+    RetryConfig,
+    retry_async_connection,
+)
+
+async def wait_for_database(session_manager: AsyncSessionManager) -> None:
+    """Wait for PostgreSQL to accept connections, with exponential backoff."""
+    async def connect() -> None:
+        async with session_manager.get_session() as session:
+            await session.execute(text(DEFAULT_HEALTHCHECK_QUERY))
+
+    await retry_async_connection(
+        connect_func=connect,
+        service_name="PostgreSQL",
+        config=RetryConfig(max_retries=5, retry_delay=1.0, max_backoff_delay=30.0),
     )
-    return result.scalar_one_or_none()
 ```
 
 ### Custom JSON Type

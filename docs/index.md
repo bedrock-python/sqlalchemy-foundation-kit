@@ -11,7 +11,7 @@
 - **Observability** — Prometheus connection-pool metrics and OpenTelemetry tracing
 - **DI integration** — Ready-to-use providers for [`dishka`](https://github.com/reagento/dishka) and `dependency-injector`
 
-Only `sqlalchemy[asyncio]` and `pydantic` are required by default — everything else is an opt-in extra.
+Only `sqlalchemy[asyncio]`, `pydantic` and `asyncpg` are required by default — everything else is an opt-in extra.
 
 ## Key Features
 
@@ -148,7 +148,7 @@ async def main():
         # Auto-commit on exit, auto-rollback on exception
     
     # Graceful shutdown
-    await session_manager.close()
+    await session_manager.aclose()
 ```
 
 ## Architecture

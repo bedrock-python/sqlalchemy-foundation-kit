@@ -29,7 +29,7 @@
 - **Observability** — Prometheus connection-pool metrics and OpenTelemetry tracing
 - **DI integration** — Ready-to-use providers for [`dishka`](https://github.com/reagento/dishka) and `dependency-injector`
 
-Only `sqlalchemy[asyncio]` and `pydantic` are required by default — everything else is an opt-in extra.
+Only `sqlalchemy[asyncio]`, `pydantic` and `asyncpg` are required by default — everything else is an opt-in extra.
 
 > [!TIP]
 > **Building this with an AI assistant?** Hand it
@@ -183,12 +183,14 @@ async def main():
         user = UserDB(id=uuid4(), email="user@example.com", username="user")
         session.add(user)
         # Auto-commit on exit
+
+    await session_manager.aclose()
 ```
 
 ### 4. Unit of Work Pattern
 
 ```python
-from unit_of_work_kit import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction
+from sqlalchemy_foundation_kit import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction
 
 # Define your transaction with repositories
 class MyTransaction(AsyncSQLAlchemyUowTransaction):

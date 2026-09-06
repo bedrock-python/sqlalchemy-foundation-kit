@@ -86,6 +86,13 @@ async with uow.transaction(isolation_level="READ COMMITTED") as tx:
 - `REPEATABLE_READ` — Prevents non-repeatable reads, snapshot isolation
 - `SERIALIZABLE` — Strongest guarantees, may have serialization failures
 
+The level is set on the connection this block checks out, so it applies to this
+transaction and leaves the engine alone. It has to be set before the transaction starts,
+which means the block's transaction opens as the context manager is entered — including
+in `query()`, which otherwise waits for the first statement. To set a level for every
+session instead, pass `isolation_level=` to `AsyncSessionManager` or set
+`QuerySettings.isolation_level`.
+
 ### Read-Only Queries
 
 For read-only operations without transaction overhead:
@@ -199,8 +206,11 @@ async with session_manager.get_transaction() as session:
 
 **Lock Keys:**
 
-- **String keys** — Automatically hashed to integers: `"process_payments"`, `"user:123"`
-- **Integer keys** — Used directly: `123456`, `user.id`
+- **String keys** — Hashed to integers with BLAKE2b: `"process_payments"`, `"user:123"`.
+  The hash is reproducible, so every replica of a service turns the same string into the
+  same lock. The key changes between library versions only if this page says so.
+- **Integer keys** — Used directly: `123456`, `user.id`. Values outside PostgreSQL's
+  `bigint` range are wrapped into it.
 
 **Lock Types:**
 
@@ -243,12 +253,9 @@ pip install sqlalchemy-foundation-kit[metrics]
 ```python
 from sqlalchemy_foundation_kit.contrib.metrics import PostgresMetrics
 
-# Create metrics collector
-metrics = PostgresMetrics(
-    prefix="myapp",
-    service_name="identity-service",
-    labels={"environment": "production"},
-)
+# Create metrics collector. `prefix` is the only argument; it is prepended with an
+# underscore and must match ^[a-zA-Z_][a-zA-Z0-9_]*$.
+metrics = PostgresMetrics(prefix="myapp")
 
 # Pass to session manager
 session_manager = create_async_session_manager(
@@ -261,12 +268,14 @@ session_manager = create_async_session_manager(
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `myapp_postgres_pool_size` | Gauge | Current pool size |
-| `myapp_postgres_pool_checked_out` | Gauge | Connections currently in use |
-| `myapp_postgres_pool_overflow` | Gauge | Overflow connections created |
-| `myapp_postgres_checkout_duration_seconds` | Histogram | Time to acquire connection |
-| `myapp_postgres_errors_total` | Counter | Database errors by type |
-| `myapp_postgres_timeouts_total` | Counter | Connection timeout errors |
+| `myapp_postgres_db_pool_size` | Gauge | Current pool size |
+| `myapp_postgres_db_pool_checked_out` | Gauge | Connections currently in use |
+| `myapp_postgres_db_pool_overflow` | Gauge | Overflow connections created |
+| `myapp_postgres_db_connection_checkout_duration_seconds` | Histogram | Time to acquire connection |
+| `myapp_postgres_db_connection_errors_total` | Counter | Database errors by type (`error_type` label) |
+| `myapp_postgres_db_connection_timeouts_total` | Counter | Connection timeout errors |
+
+Without a `prefix` the names are `postgres_db_pool_size` and so on.
 
 **Expose metrics endpoint:**
 
@@ -505,31 +514,46 @@ await container.shutdown_resources()
 
 ### Health Checks
 
+There is no `healthcheck()` method — the library ships the query and leaves the policy to
+you:
+
 ```python
-# Check database connectivity
-is_healthy = await session_manager.healthcheck()
+from sqlalchemy import text
+from sqlalchemy_foundation_kit import DEFAULT_HEALTHCHECK_QUERY
 
-if not is_healthy:
-    logger.error("Database health check failed")
-
-# With custom query
-is_healthy = await session_manager.healthcheck(
-    query="SELECT 1 FROM users LIMIT 1"
-)
+async def is_healthy(session_manager: AsyncSessionManager) -> bool:
+    """Check database connectivity."""
+    try:
+        async with session_manager.get_session() as session:
+            await session.execute(text(DEFAULT_HEALTHCHECK_QUERY))
+    except Exception:
+        logger.exception("Database health check failed")
+        return False
+    return True
 ```
 
+The DI providers run exactly this at startup — see `AsyncDatabaseProvider` and
+`DatabaseContainer`, both of which take `healthcheck_query=None` to skip it.
+
 ### Graceful Shutdown
+
+`aclose()` disposes the engine under `asyncio.shield`, capped by the manager's
+`dispose_timeout` (30 seconds by default). It is idempotent, and logs a warning rather
+than raising if the timeout expires.
 
 ```python
 import signal
 import asyncio
+
+# The timeout belongs to the manager, not to the call that closes it
+session_manager = create_async_session_manager(settings.postgres, dispose_timeout=30.0)
 
 async def shutdown(session_manager: AsyncSessionManager):
     """Graceful shutdown handler."""
     logger.info("Shutting down database connections...")
     
     # Wait for in-flight requests to complete
-    await session_manager.close(timeout=30.0)
+    await session_manager.aclose()
     
     logger.info("Database connections closed")
 
@@ -548,34 +572,37 @@ await run_app()
 
 ### Connection Retry
 
-Automatically retry on transient connection errors:
+`retry_async_connection` is a coroutine function, not a decorator, and it retries a
+callable that establishes or tests a connection — the startup wait, not every query. It
+re-raises the last exception when the attempts run out:
 
 ```python
+from sqlalchemy import text
 from sqlalchemy_foundation_kit import (
-    retry_async_connection,
+    DEFAULT_HEALTHCHECK_QUERY,
     RetryConfig,
+    retry_async_connection,
 )
 
-# Custom retry config
+# Custom retry config: attempt N sleeps retry_delay * 2 ** N, capped at max_backoff_delay
 retry_config = RetryConfig(
-    max_attempts=5,
-    initial_delay=1.0,
-    max_delay=30.0,
-    exponential_base=2.0,
-    jitter=True,
+    max_retries=5,
+    retry_delay=1.0,
+    max_backoff_delay=30.0,
 )
 
-@retry_async_connection(config=retry_config)
-async def fetch_user(session, user_id: UUID):
-    """Retries on connection errors."""
-    result = await session.execute(
-        select(UserDB).where(UserDB.id == user_id)
-    )
-    return result.scalar_one_or_none()
+async def wait_for_database(session_manager: AsyncSessionManager) -> None:
+    async def connect() -> None:
+        async with session_manager.get_session() as session:
+            await session.execute(text(DEFAULT_HEALTHCHECK_QUERY))
 
-# Use in transaction
-async with session_manager.get_transaction() as session:
-    user = await fetch_user(session, user_id)
+    await retry_async_connection(
+        connect_func=connect,
+        service_name="PostgreSQL",
+        config=retry_config,
+    )
+
+await wait_for_database(session_manager)
 ```
 
 ### pgbouncer Compatibility

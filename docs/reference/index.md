@@ -147,6 +147,12 @@ Async session manager with connection pooling and health checks.
       show_root_heading: false
       members:
         - AsyncSessionManagerBuilder
+
+::: sqlalchemy_foundation_kit.session.factories
+    options:
+      heading_level: 3
+      show_root_heading: false
+      members:
         - create_async_session_manager
 
 ::: sqlalchemy_foundation_kit.session.connection
@@ -189,11 +195,15 @@ async with session_manager.get_transaction() as session:
     session.add(user)
     # Auto-commit on exit, auto-rollback on exception
 
-# Health check
-is_healthy = await session_manager.healthcheck()
+# Health check: run the query yourself, there is no healthcheck() method
+from sqlalchemy import text
+from sqlalchemy_foundation_kit import DEFAULT_HEALTHCHECK_QUERY
 
-# Graceful shutdown
-await session_manager.close(timeout=30.0)
+async with session_manager.get_session() as session:
+    await session.execute(text(DEFAULT_HEALTHCHECK_QUERY))
+
+# Graceful shutdown; the timeout is the manager's dispose_timeout
+await session_manager.aclose()
 ```
 
 ---
