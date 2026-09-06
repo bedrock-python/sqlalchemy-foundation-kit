@@ -148,23 +148,21 @@ async def test__apply_isolation_level__none__does_nothing() -> None:
 async def test__apply_isolation_level__read_committed__applies() -> None:
     # Arrange
     mock_connection = AsyncMock()
-    mock_connection.run_sync = AsyncMock()
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.connection = AsyncMock(return_value=mock_connection)
 
     # Act
     await apply_isolation_level(mock_session, IsolationLevel.READ_COMMITTED)
 
-    # Assert
-    mock_session.connection.assert_called_once()
-    mock_connection.run_sync.assert_called_once()
+    # Assert: the level has to reach the connection as it is checked out. Setting it
+    # afterwards is what PostgreSQL refuses -- the transaction has already started.
+    mock_session.connection.assert_awaited_once_with(execution_options={"isolation_level": "READ COMMITTED"})
 
 
 @pytest.mark.asyncio
 async def test__apply_isolation_level__serializable__applies() -> None:
     # Arrange
     mock_connection = AsyncMock()
-    mock_connection.run_sync = AsyncMock()
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.connection = AsyncMock(return_value=mock_connection)
 
@@ -172,7 +170,7 @@ async def test__apply_isolation_level__serializable__applies() -> None:
     await apply_isolation_level(mock_session, "SERIALIZABLE")
 
     # Assert
-    mock_session.connection.assert_called_once()
+    mock_session.connection.assert_awaited_once_with(execution_options={"isolation_level": "SERIALIZABLE"})
 
 
 @pytest.mark.asyncio
@@ -428,14 +426,11 @@ async def test__open_session__with_isolation_level__applies() -> None:
 @pytest.mark.asyncio
 async def test__transaction__commits_on_success() -> None:
     # Arrange
-    mock_begin_context = AsyncMock()
-    mock_begin_context.__aenter__ = AsyncMock(return_value=None)
-    mock_begin_context.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
-    mock_session.begin = Mock(return_value=mock_begin_context)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.flush = AsyncMock()
 
     mock_transaction = Mock()
@@ -455,14 +450,11 @@ async def test__transaction__commits_on_success() -> None:
 @pytest.mark.asyncio
 async def test__transaction__flushes_before_commit__when_enabled() -> None:
     # Arrange
-    mock_begin_context = AsyncMock()
-    mock_begin_context.__aenter__ = AsyncMock(return_value=None)
-    mock_begin_context.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
-    mock_session.begin = Mock(return_value=mock_begin_context)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.flush = AsyncMock()
 
     mock_transaction = Mock()
@@ -482,14 +474,11 @@ async def test__transaction__flushes_before_commit__when_enabled() -> None:
 @pytest.mark.asyncio
 async def test__transaction__skips_flush__when_disabled() -> None:
     # Arrange
-    mock_begin_context = AsyncMock()
-    mock_begin_context.__aenter__ = AsyncMock(return_value=None)
-    mock_begin_context.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
-    mock_session.begin = Mock(return_value=mock_begin_context)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.flush = AsyncMock()
 
     mock_transaction = Mock()
@@ -509,14 +498,11 @@ async def test__transaction__skips_flush__when_disabled() -> None:
 @pytest.mark.asyncio
 async def test__transaction__flush_override__overrides_default() -> None:
     # Arrange
-    mock_begin_context = AsyncMock()
-    mock_begin_context.__aenter__ = AsyncMock(return_value=None)
-    mock_begin_context.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
-    mock_session.begin = Mock(return_value=mock_begin_context)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.flush = AsyncMock()
 
     mock_transaction = Mock()
@@ -536,14 +522,11 @@ async def test__transaction__flush_override__overrides_default() -> None:
 @pytest.mark.asyncio
 async def test__transaction__flush_error__logs_warning_and_raises() -> None:
     # Arrange
-    mock_begin_context = AsyncMock()
-    mock_begin_context.__aenter__ = AsyncMock(return_value=None)
-    mock_begin_context.__aexit__ = AsyncMock(return_value=None)
-
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
-    mock_session.begin = Mock(return_value=mock_begin_context)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.flush = AsyncMock(side_effect=SQLAlchemyError("Flush error"))
 
     mock_transaction = Mock()
@@ -561,6 +544,58 @@ async def test__transaction__flush_error__logs_warning_and_raises() -> None:
         mock_logger.warning.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test__transaction__isolation_level_already_began__joins_it_and_commits() -> None:
+    # Arrange: applying an isolation level checks a connection out, which begins the
+    # transaction. session.begin() would raise on top of that, so the UoW joins it.
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = Mock()
+    mock_session.in_transaction = Mock(return_value=True)
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    mock_transaction = Mock()
+    mock_session_maker = Mock(return_value=mock_session)
+    mock_factory = Mock(return_value=mock_transaction)
+
+    uow = AsyncSQLAlchemyUnitOfWork(mock_session_maker, mock_factory)
+
+    # Act
+    async with uow.transaction(isolation_level=IsolationLevel.SERIALIZABLE) as tx:
+        assert tx is mock_transaction
+
+    # Assert
+    mock_session.begin.assert_not_called()
+    mock_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test__transaction__exception__rolls_back() -> None:
+    # Arrange
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
+    mock_session.rollback = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    mock_session_maker = Mock(return_value=mock_session)
+    mock_factory = Mock(return_value=Mock())
+
+    uow = AsyncSQLAlchemyUnitOfWork(mock_session_maker, mock_factory)
+
+    # Act & Assert
+    with pytest.raises(ValueError):
+        async with uow.transaction():
+            raise ValueError("Test error")
+
+    mock_session.rollback.assert_awaited_once()
+    mock_session.commit.assert_not_awaited()
+
+
 # ============================================================================
 # managed_session Tests
 # ============================================================================
@@ -573,6 +608,7 @@ async def test__managed_session__yields_transaction_and_session() -> None:
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.commit = AsyncMock()
 
     mock_transaction = Mock()
@@ -597,6 +633,7 @@ async def test__managed_session__requires_manual_commit() -> None:
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.commit = AsyncMock()
 
     mock_transaction = Mock()
@@ -614,12 +651,35 @@ async def test__managed_session__requires_manual_commit() -> None:
 
 
 @pytest.mark.asyncio
+async def test__managed_session__isolation_level_already_began__does_not_begin_again() -> None:
+    # Arrange
+    mock_session = AsyncMock(spec=AsyncSession)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=True)
+
+    mock_session_maker = Mock(return_value=mock_session)
+    mock_factory = Mock(return_value=Mock())
+
+    uow = AsyncSQLAlchemyUnitOfWork(mock_session_maker, mock_factory)
+
+    # Act
+    async with uow.managed_session(isolation_level="SERIALIZABLE"):
+        pass
+
+    # Assert
+    mock_session.begin.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test__managed_session__exception__rolls_back() -> None:
     # Arrange
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_session.begin = AsyncMock()
+    mock_session.in_transaction = Mock(return_value=False)
     mock_session.rollback = AsyncMock()
 
     mock_transaction = Mock()

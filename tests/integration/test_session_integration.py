@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
 from tests.integration.models import Status, TestUser
 
 # ============================================================================
@@ -347,3 +348,82 @@ async def test__async_session__unique_constraint__violated_raises_error(async_se
     with pytest.raises(Exception):  # IntegrityError
         async with async_session.begin():
             async_session.add(user2)
+
+
+# ============================================================================
+# AsyncSessionManager.get_transaction Tests
+# ============================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__clean_exit__commits(
+    session_manager: AsyncSessionManager[AsyncSession],
+    async_session: AsyncSession,
+) -> None:
+    # Arrange
+    email = "get-transaction-commit@example.com"
+
+    # Act
+    async with session_manager.get_transaction() as session:
+        session.add(TestUser(name="Committed", email=email, age=41))
+
+    # Assert
+    result = await async_session.execute(select(TestUser).where(TestUser.email == email))
+    assert result.scalar_one_or_none() is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__exception__rolls_back(
+    session_manager: AsyncSessionManager[AsyncSession],
+    async_session: AsyncSession,
+) -> None:
+    # Arrange
+    email = "get-transaction-rollback@example.com"
+
+    # Act
+    with pytest.raises(ValueError):
+        async with session_manager.get_transaction() as session:
+            session.add(TestUser(name="Rolled back", email=email, age=41))
+            await session.flush()
+            raise ValueError("Intentional rollback")
+
+    # Assert
+    result = await async_session.execute(select(TestUser).where(TestUser.email == email))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "isolation_level,expected",
+    [
+        ("SERIALIZABLE", "serializable"),
+        ("REPEATABLE READ", "repeatable read"),
+    ],
+)
+async def test__get_transaction__isolation_level__applied_to_the_transaction(
+    session_manager: AsyncSessionManager[AsyncSession],
+    isolation_level: str,
+    expected: str,
+) -> None:
+    # Act
+    async with session_manager.get_transaction(isolation_level=isolation_level) as session:
+        actual = (await session.execute(text("SHOW transaction_isolation"))).scalar_one()
+
+    # Assert
+    assert actual == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__no_isolation_level__leaves_the_server_default(
+    session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act
+    async with session_manager.get_transaction() as session:
+        actual = (await session.execute(text("SHOW transaction_isolation"))).scalar_one()
+
+    # Assert
+    assert actual == "read committed"

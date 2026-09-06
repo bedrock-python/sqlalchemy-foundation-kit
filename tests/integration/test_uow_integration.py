@@ -7,6 +7,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sqlalchemy_foundation_kit.uow.enums import IsolationLevel
 from sqlalchemy_foundation_kit.uow.sqlalchemy import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction
 from tests.integration.models import TestUser
 
@@ -171,3 +172,119 @@ async def test__savepoint__inside_managed_session__transaction_stays_usable(
     async with async_session_factory() as session:
         emails = (await session.execute(select(TestUser.email))).scalars().all()
     assert list(emails) == ["after@example.com"]
+
+
+# ============================================================================
+# Isolation Level Tests
+# ============================================================================
+
+
+@pytest.fixture
+def uow(
+    async_session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction]:
+    return AsyncSQLAlchemyUnitOfWork(async_session_factory, transaction_factory=AsyncSQLAlchemyUowTransaction)
+
+
+async def _transaction_isolation(session: AsyncSession) -> str:
+    return (await session.execute(text("SHOW transaction_isolation"))).scalar_one()  # type: ignore[no-any-return]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "isolation_level,expected",
+    [
+        (IsolationLevel.SERIALIZABLE, "serializable"),
+        (IsolationLevel.REPEATABLE_READ, "repeatable read"),
+        ("READ_COMMITTED", "read committed"),
+    ],
+)
+async def test__transaction__isolation_level__applied_to_the_transaction(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+    isolation_level: IsolationLevel | str,
+    expected: str,
+) -> None:
+    # Act
+    async with uow.transaction(isolation_level=isolation_level) as tx:
+        actual = await _transaction_isolation(tx.session)
+
+    # Assert
+    assert actual == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__managed_session__isolation_level__applied_to_the_transaction(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with uow.managed_session(isolation_level=IsolationLevel.SERIALIZABLE) as (_tx, session):
+        actual = await _transaction_isolation(session)
+        await session.rollback()
+
+    # Assert
+    assert actual == "serializable"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__isolation_level__applied_to_the_transaction(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with uow.query(isolation_level=IsolationLevel.REPEATABLE_READ) as qx:
+        actual = await _transaction_isolation(qx.session)
+
+    # Assert
+    assert actual == "repeatable read"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__isolation_level__still_commits(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+    async_session: AsyncSession,
+) -> None:
+    # Arrange
+    email = "uow-isolation-commit@example.com"
+
+    # Act
+    async with uow.transaction(isolation_level=IsolationLevel.SERIALIZABLE) as tx:
+        tx.session.add(TestUser(name="Serializable", email=email, age=33))
+
+    # Assert
+    result = await async_session.execute(select(TestUser).where(TestUser.email == email))
+    assert result.scalar_one_or_none() is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__isolation_level__rolls_back_on_exception(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+    async_session: AsyncSession,
+) -> None:
+    # Arrange
+    email = "uow-isolation-rollback@example.com"
+
+    # Act
+    with pytest.raises(ValueError):
+        async with uow.transaction(isolation_level=IsolationLevel.SERIALIZABLE) as tx:
+            tx.session.add(TestUser(name="Serializable", email=email, age=33))
+            await tx.session.flush()
+            raise ValueError("Intentional rollback")
+
+    # Assert
+    result = await async_session.execute(select(TestUser).where(TestUser.email == email))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__invalid_isolation_level__raises_value_error(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act & Assert
+    with pytest.raises(ValueError, match="Invalid isolation level"):
+        async with uow.transaction(isolation_level="NOT A LEVEL"):
+            pass

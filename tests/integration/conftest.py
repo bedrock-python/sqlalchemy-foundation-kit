@@ -25,7 +25,17 @@ except ImportError:
     PostgresContainer = object  # type: ignore[assignment, misc]
     HAS_TESTCONTAINERS = False
 
+from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
 from tests.integration.models import Base
+
+
+def asyncpg_url(container: PostgresContainer) -> str:
+    """Rewrite the container's connection URL onto the asyncpg driver."""
+    url = container.get_connection_url()
+    if "://" in url:
+        _scheme, rest = url.split("://", 1)
+        url = f"postgresql+asyncpg://{rest}"
+    return url
 
 
 def is_docker_available() -> bool:
@@ -56,13 +66,8 @@ def postgres_container() -> Generator[PostgresContainer, None, None]:
 @pytest_asyncio.fixture(scope="session")
 async def db_engine(postgres_container: PostgresContainer) -> AsyncGenerator[AsyncEngine, None]:
     """Create async database engine once for entire test session."""
-    url = postgres_container.get_connection_url()
-    if "://" in url:
-        _scheme, rest = url.split("://", 1)
-        url = f"postgresql+asyncpg://{rest}"
-
     engine = create_async_engine(
-        url,
+        asyncpg_url(postgres_container),
         echo=False,
         pool_pre_ping=True,
         pool_size=5,
@@ -97,3 +102,16 @@ async def async_session(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, 
 async def async_session_factory(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     """Create async session factory once for entire test session."""
     return async_sessionmaker(db_engine, expire_on_commit=False, class_=AsyncSession)
+
+
+@pytest_asyncio.fixture
+async def session_manager(
+    postgres_container: PostgresContainer,
+) -> AsyncGenerator[AsyncSessionManager[AsyncSession], None]:
+    """Create an AsyncSessionManager pointed at the test container."""
+    manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager(
+        asyncpg_url(postgres_container),
+        poolclass="async_adapted_queue",
+    )
+    yield manager
+    await manager.aclose()
