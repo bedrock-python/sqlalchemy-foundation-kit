@@ -11,7 +11,7 @@ def require_optional(module_name: str, extra_name: str) -> types.ModuleType:
 
     Args:
         module_name: Name of the module to import (e.g., "orjson", "opentelemetry").
-        extra_name: Name of the pip extra that provides this dependency (e.g., "json", "telemetry").
+        extra_name: Name of the pip extra that provides this dependency (e.g., "orjson", "telemetry").
 
     Returns:
         The imported module.
@@ -20,7 +20,7 @@ def require_optional(module_name: str, extra_name: str) -> types.ModuleType:
         ImportError: If the module is not installed, with installation instructions.
 
     Examples:
-        >>> orjson = require_optional("orjson", "json")
+        >>> orjson = require_optional("orjson", "orjson")
         >>> from opentelemetry import trace
         # or
         >>> otel = require_optional("opentelemetry", "telemetry")

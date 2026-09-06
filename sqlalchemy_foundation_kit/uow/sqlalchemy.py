@@ -74,10 +74,15 @@ async def apply_isolation_level(
 ) -> None:
     """Apply isolation level to an async session's connection.
 
-    **Implementation Detail**:
-    We use ``run_sync()`` because SQLAlchemy's ``execution_options()`` is a
-    synchronous method that configures the underlying DBAPI connection object.
-    We must bridge from async context to sync method via ``run_sync()``.
+    The level has to reach the connection *before* the connection begins its
+    transaction — PostgreSQL cannot change the isolation level of a transaction that
+    is already running, and SQLAlchemy raises ``InvalidRequestError`` if you try. So
+    the level is handed to the ``session.connection()`` call that checks the
+    connection out, which applies it and only then begins.
+
+    Call this on a session that has not yet talked to the database. It starts the
+    session's transaction as a side effect, so a caller that wants to own the
+    transaction should join the one already open rather than call ``session.begin()``.
 
     This is a DRY utility to eliminate duplication of isolation level application
     logic across ``transaction()``, ``managed_session()``, and ``query()`` methods.
@@ -103,9 +108,32 @@ async def apply_isolation_level(
     """
     normalized = normalize_isolation_level(isolation_level)
     if normalized is not None:
-        conn = await session.connection()
-        # run_sync bridges async → sync for DBAPI-level configuration
-        await conn.run_sync(lambda c: c.execution_options(isolation_level=normalized))
+        await session.connection(execution_options={"isolation_level": normalized})
+
+
+@asynccontextmanager
+async def _owned_transaction(session: AsyncSession) -> AsyncIterator[None]:
+    """Run a block inside a transaction, committing on success and rolling back on failure.
+
+    ``session.begin()`` refuses to start a second transaction, and applying an isolation
+    level has to check a connection out — which begins one. So the transaction is only
+    started here when the session does not already have one, and the commit/rollback is
+    driven explicitly instead of by the ``session.begin()`` context manager.
+    """
+    if not session.in_transaction():
+        await session.begin()
+
+    try:
+        yield
+    except BaseException:
+        await session.rollback()
+        raise
+
+    try:
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        raise
 
 
 class AsyncSQLAlchemyUowTransaction(AsyncUowTransaction):
@@ -181,13 +209,14 @@ class PostgresAdvisoryLockMixin:
 
     session: AsyncSession  # Type annotation for protocol compliance
 
-    async def try_advisory_lock(self, key: int) -> bool:
+    async def try_advisory_lock(self, key: str | int) -> bool:
         """Acquire a Postgres transaction-scoped advisory lock.
 
         Delegates to :func:`try_advisory_xact_lock` for actual locking logic.
 
         Args:
-            key: Integer lock key.
+            key: Lock key. An integer is used as-is; a string is hashed to one
+                reproducibly, so the same string is the same lock in every process.
 
         Returns:
             True if lock was acquired, False if already held by another session.
@@ -301,7 +330,7 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
         if flush_before_commit is None:
             flush_before_commit = self._flush_before_commit
 
-        async with self.open_session(isolation_level) as session, session.begin():
+        async with self.open_session(isolation_level) as session, _owned_transaction(session):
             uow = self._transaction_factory(session)
             yield uow
             if flush_before_commit:
@@ -390,8 +419,10 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
             rollback when the session closes.
         """
         async with self.open_session(isolation_level) as session:
-            # Start transaction WITHOUT context manager - no auto-commit
-            await session.begin()
+            # Start transaction WITHOUT context manager - no auto-commit.
+            # An isolation level, if one was asked for, has already begun it.
+            if not session.in_transaction():
+                await session.begin()
             try:
                 uow = self._transaction_factory(session)
                 yield uow, session

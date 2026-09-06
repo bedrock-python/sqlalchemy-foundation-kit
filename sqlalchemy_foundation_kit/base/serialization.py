@@ -57,7 +57,7 @@ def _json_serializer(obj: object) -> str:
         >>> _json_serializer({"key": "value"})
         '{"key":"value"}'
     """
-    orjson = require_optional("orjson", "json")
+    orjson = require_optional("orjson", "orjson")
 
     try:
         return orjson.dumps(obj, default=_default_json_encoder).decode("utf-8")  # type: ignore[no-any-return]
@@ -82,7 +82,7 @@ def configure_orjson_serialization() -> dict[str, object]:
         >>> "json_deserializer" in config
         True
     """
-    orjson = require_optional("orjson", "json")
+    orjson = require_optional("orjson", "orjson")
 
     return {
         "json_serializer": _json_serializer,

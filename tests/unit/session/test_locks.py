@@ -2,11 +2,63 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from sqlalchemy_foundation_kit.session.locks import _to_signed64, try_advisory_xact_lock
+from sqlalchemy_foundation_kit.session.locks import _hash_lock_key, _to_signed64, try_advisory_xact_lock
+
+# ============================================================================
+# _hash_lock_key Tests
+# ============================================================================
+
+
+def test__hash_lock_key__same_key__same_value() -> None:
+    # Arrange & Act
+    first = _hash_lock_key("nightly-rollup")
+    second = _hash_lock_key("nightly-rollup")
+
+    # Assert
+    assert first == second
+
+
+def test__hash_lock_key__different_keys__different_values() -> None:
+    # Arrange & Act & Assert
+    assert _hash_lock_key("job-a") != _hash_lock_key("job-b")
+
+
+def test__hash_lock_key__any_key__fits_signed_64_bit() -> None:
+    # Arrange
+    keys = ["", "a" * 1000, "test_lock_\U0001f512", "test-lock_123!@#$%^&*()"]
+
+    # Act & Assert
+    for key in keys:
+        assert -(2**63) <= _hash_lock_key(key) <= 2**63 - 1
+
+
+def test__hash_lock_key__fresh_interpreters__agree_on_the_key() -> None:
+    # Arrange: two replicas of a service are two processes. Python salts str.__hash__
+    # per interpreter, so a hash()-based key made them lock against nothing.
+    script = (
+        "from sqlalchemy_foundation_kit.session.locks import _hash_lock_key; print(_hash_lock_key('nightly-rollup'))"
+    )
+
+    # Act
+    keys = {
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script],
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+        for _ in range(3)
+    }
+
+    # Assert
+    assert keys == {str(_hash_lock_key("nightly-rollup"))}
+
 
 # ============================================================================
 # _to_signed64 Tests
@@ -170,6 +222,23 @@ def test__to_signed64__idempotent() -> None:
 # ============================================================================
 # try_advisory_xact_lock Tests
 # ============================================================================
+
+
+@pytest.mark.asyncio
+async def test__try_advisory_xact_lock__string_key__uses_the_reproducible_hash() -> None:
+    # Arrange
+    mock_result = Mock()
+    mock_result.scalar.return_value = True
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    # Act
+    await try_advisory_xact_lock(mock_session, "nightly-rollup")
+
+    # Assert
+    params = mock_session.execute.call_args[0][1]
+    assert params["k"] == _to_signed64(_hash_lock_key("nightly-rollup"))
 
 
 @pytest.mark.asyncio

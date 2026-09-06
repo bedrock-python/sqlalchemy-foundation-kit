@@ -1576,6 +1576,7 @@ asyncio = [
 name = "sqlalchemy-foundation-kit"
 source = { editable = "." }
 dependencies = [
+    { name = "asyncpg" },
     { name = "pydantic" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
@@ -1645,6 +1646,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asyncpg", specifier = ">=0.30.0,<1.0.0" },
     { name = "dependency-injector", marker = "extra == 'all'", specifier = ">=4.41.0,<5.0.0" },
     { name = "dependency-injector", marker = "extra == 'dependency-injector'", specifier = ">=4.41.0,<5.0.0" },
     { name = "dishka", marker = "extra == 'all'", specifier = ">=1.3.0,<2.0.0" },

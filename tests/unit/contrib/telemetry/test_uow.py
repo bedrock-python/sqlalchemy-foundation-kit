@@ -269,6 +269,8 @@ async def test__traced_async_unit_of_work__transaction_with_isolation_level__set
     mock_transaction = MagicMock()
     mock_session = AsyncMock()
     mock_session.begin = MagicMock()
+    # Asking for an isolation level checks a connection out, which begins the transaction.
+    mock_session.in_transaction = MagicMock(return_value=True)
     mock_session.commit = AsyncMock()
     mock_session.rollback = AsyncMock()
     mock_session.close = AsyncMock()

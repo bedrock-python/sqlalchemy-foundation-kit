@@ -238,15 +238,18 @@ class AsyncSessionManager(Generic[SessionT]):
         """Get a new database session with automatic transaction management.
 
         Args:
-            isolation_level: Optional isolation level for the transaction.
+            isolation_level: Optional isolation level for the transaction, in the
+                PostgreSQL spelling (``"SERIALIZABLE"``, ``"REPEATABLE READ"``, …).
+                It is applied to the connection this transaction runs on, so it
+                affects only this transaction and not the engine.
 
         Yields:
             Managed async session with active transaction.
         """
         self._ensure_not_closed()
-        options = {"isolation_level": isolation_level} if isolation_level else {}
-        async with (
-            self._session_maker(execution_options=options) as session,
-            session.begin(),
-        ):
+        async with self._session_maker() as session, session.begin():
+            if isolation_level is not None:
+                # begin() has not provisioned a connection yet, so this call is the one
+                # that checks it out -- the only moment the level can still be set.
+                await session.connection(execution_options={"isolation_level": isolation_level})
             yield session

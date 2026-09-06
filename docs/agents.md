@@ -7,11 +7,11 @@
 | | |
 |---|---|
 | Package | `sqlalchemy-foundation-kit` on PyPI, import root `sqlalchemy_foundation_kit` |
-| Requires | Python 3.11+, SQLAlchemy 2 (`>=2.0.35,<3`), Pydantic 2 (`>=2.5,<3`), PostgreSQL, and `asyncpg` — the import fails without it, see rule 1 |
-| Install | `pip install sqlalchemy-foundation-kit asyncpg` · extras: `settings`, `metrics`, `orjson`, `dishka`, `dependency-injector`, `telemetry`, `all` |
+| Requires | Python 3.11+, SQLAlchemy 2 (`>=2.0.35,<3`), Pydantic 2 (`>=2.5,<3`), asyncpg (`>=0.30,<1`), PostgreSQL |
+| Install | `pip install sqlalchemy-foundation-kit` · extras: `settings`, `metrics`, `orjson`, `dishka`, `dependency-injector`, `telemetry`, `all` |
 | Async | the whole library. `AsyncEngine`, `AsyncSession`, `asyncpg` |
 | Sync | none. There is no sync mirror and no sync entry point |
-| Version | 0.2.0 — everything below was read from the source at that version |
+| Version | everything below was read from the source this site was built from. Three calls described here do not work on 0.2.0 — see [fixed since 0.2.0](#fixed-since-020) |
 | Source | <https://github.com/bedrock-python/sqlalchemy-foundation-kit> |
 
 ## How to read this page
@@ -26,11 +26,11 @@ API, so it carries neither the control nor a `.md` twin — read it as HTML, or 
 docstrings in the source.
 
 Top to bottom before writing code. [Rules that hold or break the code](#rules-that-hold-or-break-the-code)
-is the section correctness lives in, and it is followed by the short list of things that
-are [broken at 0.2.0](#broken-at-020) — call one of those and the process raises, not the
-database. Every name used below is in the public API; if you need something not listed
-here, fetch the page the [documentation map](#documentation-map) points at rather than
-guessing a method that sounds plausible.
+is the section correctness lives in, and it is followed by the short list of calls that
+are [fixed since 0.2.0](#fixed-since-020) — if the installed version is 0.2.0, those
+raise before they reach the database. Every name used below is in the public API; if you
+need something not listed here, fetch the page the [documentation map](#documentation-map)
+points at rather than guessing a method that sounds plausible.
 
 ## Scope
 
@@ -170,7 +170,7 @@ use_orjson=False, metrics=None, on_engine_created=None, dispose_timeout=30.0, **
 | `.engine` | the `AsyncEngine`, created in `__init__` |
 | `.session_maker` | the `async_sessionmaker`; this is what the unit of work wants |
 | `.get_session()` | async context manager yielding a session with no transaction started |
-| `.get_transaction(isolation_level=None)` | **raises `TypeError` at 0.2.0** — see [broken at 0.2.0](#broken-at-020) |
+| `.get_transaction(isolation_level=None)` | async context manager yielding a session with a transaction open: commits on clean exit, rolls back on exception. An `isolation_level` is set on that transaction's connection and nothing else |
 | `await .aclose()` | disposes the engine under `asyncio.shield`, capped at `dispose_timeout`; idempotent, logs a warning on timeout |
 | `async with manager:` | the same `aclose()` on exit |
 
@@ -215,8 +215,10 @@ never propagated.
 an RLS context or a statement timeout on every session, calling `super().open_session(...)`
 inside. `flush_before_commit=None` on `transaction()` falls back to the constructor value
 (`True`), which flushes before the commit so an integrity error surfaces inside the block
-rather than at exit. Every `isolation_level` argument in this table is broken at 0.2.0 —
-see below.
+rather than at exit. An `isolation_level` argument takes an `IsolationLevel` or a string
+in either spelling, and is set on the connection the block checks out, so it covers this
+transaction and leaves the engine alone. Setting it has to happen before the transaction
+starts, so it opens the transaction as the block is entered — `query()` included.
 
 `TracedAsyncUnitOfWork(session_maker, transaction_factory,
 service_name="sqlalchemy-foundation-kit", *, flush_before_commit=True)` from
@@ -239,8 +241,10 @@ typing a transaction structurally in a use case that should not import the concr
 
 `await try_advisory_xact_lock(session, key)` is the same lock as a free function:
 `pg_try_advisory_xact_lock`, non-blocking, returns `True` if taken, released at the end of
-the transaction. `key` may be `str | int`; the integer is wrapped into signed 64-bit.
-Read rule 8 before passing a string.
+the transaction. `key` may be `str | int`; an integer is wrapped into signed 64-bit, a
+string is hashed into it with BLAKE2b, reproducibly — the same string is the same lock in
+every process. The `SupportsAdvisoryLock` protocol still types `key` as `int`; the mixin
+and the free function take `str | int`.
 
 ### Base ORM
 
@@ -328,10 +332,11 @@ decorator.
 
 ## Rules that hold or break the code
 
-1. **`asyncpg` must be installed even though nothing declares it.** `AsyncCConnection`
-   imports it at module import time and the package `__init__` imports that, so on a clean
-   `pip install sqlalchemy-foundation-kit` the very first `import sqlalchemy_foundation_kit`
-   raises `ModuleNotFoundError: No module named 'asyncpg'`. Install `asyncpg` alongside it.
+1. **`asyncpg` is a hard dependency, not an extra.** `AsyncCConnection` subclasses
+   `asyncpg.Connection` at module import time and the package `__init__` imports it, so
+   the package cannot be imported without asyncpg. `pip install sqlalchemy-foundation-kit`
+   brings it. On 0.2.0 it did not, and the first `import sqlalchemy_foundation_kit` raised
+   `ModuleNotFoundError: No module named 'asyncpg'`.
 2. **PostgreSQL over asyncpg only.** The DSN is `postgresql+asyncpg://…`.
    `create_async_session_manager` passes an asyncpg-specific `connection_class` and
    asyncpg-specific `connect_args`; another driver rejects them.
@@ -354,13 +359,14 @@ decorator.
    session is closed and its connection is back in the pool. Return domain objects or
    detached data, never a live `tx`. Storing one on `self`, in a module global, or in a
    `ContextVar` that outlives the block is the same bug.
-8. **A string advisory-lock key does not lock across processes.** `try_advisory_xact_lock`
-   turns a `str` into an integer with Python's `hash()`, which is salted per process:
-   three fresh interpreters produced three different keys for `"job"`. Two replicas of the
-   same service therefore take *different* locks and both proceed. Pass a stable integer
-   you computed yourself (`zlib.crc32(b"job")`, a hash digest, a constant) for anything
-   that has to be exclusive beyond one process. The protocol and the mixin type `key` as
-   `int` for this reason; only the free function accepts `str`.
+8. **A string advisory-lock key is stable across processes; on 0.2.0 it was not.**
+   `try_advisory_xact_lock` hashes a `str` with BLAKE2b, so every replica turns the same
+   string into the same lock. On 0.2.0 it used Python's `hash()`, which is salted per
+   process: three fresh interpreters produced three different keys for `"job"`, so two
+   replicas took *different* locks and both proceeded. On that version pass a stable
+   integer you computed yourself (`zlib.crc32(b"job")`, a digest, a constant) instead.
+   Either way the key changes with the hash: a rolling deploy across the fix has old and
+   new replicas holding different locks for the same name until it finishes.
 9. **An advisory lock is only held while its transaction is.** `pg_try_advisory_xact_lock`
    releases at transaction end, so take it inside `transaction()` or `managed_session()`
    and do the protected work in the same block. Taking one in `query()` is a no-op with a
@@ -380,29 +386,28 @@ decorator.
     `contrib.metrics` needs `[metrics]`, `contrib.telemetry` needs `[telemetry]`,
     `contrib.di` needs `[dishka]`, `contrib.dependency_injector` needs
     `[dependency-injector]`, and `use_orjson=True` needs `[orjson]`. The DI packages fail
-    on *import* without their extra, with a bare `AttributeError` rather than the intended
-    message — see below.
+    on *import* without their extra, with an `ImportError` naming the extra to install.
 14. **Metrics never raise into your code.** Every recorder call is wrapped: a broken
     metrics backend is logged at exception level and discarded, and the query proceeds.
 15. **Close the manager.** `await manager.aclose()` disposes the engine under a shield and
     a `dispose_timeout` (30s). Skipping it leaks connections; calling it twice is fine.
 
-### Broken at 0.2.0
+### Fixed since 0.2.0
 
-Three published entry points raise before they reach the database. All three were run
-against PostgreSQL 17 to confirm it.
+Three published entry points raise before they reach the database on 0.2.0. They work on
+current versions; the workaround column is what to do if the installed version is 0.2.0.
 
-| Call | What happens | Use instead |
+| Call | What 0.2.0 does | Workaround on 0.2.0 |
 |---|---|---|
-| `manager.get_transaction()`, with or without `isolation_level` | `TypeError: Session.__init__() got an unexpected keyword argument 'execution_options'` — the argument is passed to the session factory unconditionally | `async with manager.get_session() as s, s.begin():`, or the unit of work |
-| `uow.transaction(isolation_level=…)`, `uow.managed_session(isolation_level=…)`, `uow.query(isolation_level=…)` | `InvalidRequestError: This connection has already initialized a SQLAlchemy Transaction()… isolation_level may not be altered` — the level is applied after the connection has autobegun | set the level on the engine: `AsyncSessionManager(..., isolation_level="SERIALIZABLE")` or `QuerySettings(isolation_level=...)` |
+| `manager.get_transaction()`, with or without `isolation_level` | `TypeError: Session.__init__() got an unexpected keyword argument 'execution_options'` — the argument was passed to the session factory unconditionally | `async with manager.get_session() as s, s.begin():`, or the unit of work |
+| `uow.transaction(isolation_level=…)`, `uow.managed_session(isolation_level=…)`, `uow.query(isolation_level=…)` | `InvalidRequestError: This connection has already initialized a SQLAlchemy Transaction()… isolation_level may not be altered` — the level was applied after the connection had autobegun | set the level on the engine: `AsyncSessionManager(..., isolation_level="SERIALIZABLE")` or `QuerySettings(isolation_level=...)` |
 | `import sqlalchemy_foundation_kit.contrib.di` (or `.contrib.dependency_injector`) without its extra | `AttributeError: 'NoneType' object has no attribute 'APP'` (resp. `'DeclarativeContainer'`) instead of the intended `ImportError` | install the extra; the message is not the one the code meant to give you |
 
-`IsolationLevel` itself is fine — `READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ`,
-`SERIALIZABLE`, whose values are the PostgreSQL spellings with spaces — and so is
-`normalize_isolation_level` in `sqlalchemy_foundation_kit.uow.sqlalchemy`, which accepts
-either spelling in any case. It is only the plumbing that carries the value to a session
-that is wrong.
+`IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,
+`REPEATABLE_READ`, `SERIALIZABLE`, whose values are the PostgreSQL spellings with spaces —
+and so is `normalize_isolation_level` in `sqlalchemy_foundation_kit.uow.sqlalchemy`, which
+accepts either spelling in any case. It was only the plumbing carrying the value to a
+session that was wrong.
 
 ## Common mistakes
 
@@ -460,17 +465,16 @@ async def get_user(uow, user_id) -> User | None:
 ```
 
 ```python
-# WRONG — a string key hashes differently in every process, so nothing is excluded
+# WRONG — the lock is released at transaction end, so this protects nothing
+async with uow.query() as qx:
+    if await qx.try_advisory_lock("nightly-rollup"):
+        ...
+await do_the_rollup()          # outside the block: the lock is already gone
+
+# RIGHT — take the lock and do the work in the same transaction
 async with uow.transaction() as tx:
     if await tx.try_advisory_lock("nightly-rollup"):
-        ...
-
-# RIGHT — a key both replicas compute the same way
-LOCK_NIGHTLY_ROLLUP = 0x6E52  # any fixed int; zlib.crc32(b"nightly-rollup") works too
-
-async with uow.transaction() as tx:
-    if await tx.try_advisory_lock(LOCK_NIGHTLY_ROLLUP):
-        ...
+        await do_the_rollup(tx)
 ```
 
 ```python
@@ -501,14 +505,14 @@ SQLAlchemy's through untouched.
 
 | Raised | When |
 |---|---|
-| `ModuleNotFoundError` | `asyncpg` is not installed (rule 1) |
-| `ImportError` | an extra is missing: `orjson`, `pydantic-settings`, `prometheus-client`, the OpenTelemetry instrumentations, `dishka`, `dependency-injector`. The orjson message names a `[json]` extra that does not exist — the real one is `[orjson]` |
+| `ModuleNotFoundError` | `asyncpg` is not installed — only reachable on 0.2.0, which did not declare it (rule 1) |
+| `ImportError` | an extra is missing: `orjson`, `pydantic-settings`, `prometheus-client`, the OpenTelemetry instrumentations, `dishka`, `dependency-injector`. The message names the extra to install |
 | `RuntimeError` | `"AsyncSessionManager is closed"` — a session asked for after `aclose()` |
 | `ValueError` | an isolation level `normalize_isolation_level` does not know; an unregistered pool name; a pool name registered twice without `override=True`; `max_retries < 1`; a metric prefix that is not a Prometheus identifier |
 | `pydantic.ValidationError` | a `contrib.settings` model built without `password`, `database` or `application_name`, or a `static` pool with `max_overflow > 0` |
-| `TypeError` | `manager.get_transaction()` (see above); a value orjson cannot serialize |
+| `TypeError` | a value orjson cannot serialize; `manager.get_transaction()` on 0.2.0 (see above) |
 | `sqlalchemy.exc.IllegalStateChangeError` | one session driven by two tasks at once (rule 6) |
-| `sqlalchemy.exc.InvalidRequestError` | `isolation_level` on a unit-of-work method (see above) |
+| `sqlalchemy.exc.InvalidRequestError` | `isolation_level` on a unit-of-work method on 0.2.0 (see above) |
 | `sqlalchemy.exc.IntegrityError`, `OperationalError`, … | the database refused the statement. Inside `tx.savepoint()` these are re-raised with the surrounding transaction still usable; anywhere else they roll the whole block back |
 
 ## Documentation map
