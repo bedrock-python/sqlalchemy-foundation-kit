@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
+from ..protocols import CheckoutWaitRecorder
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_DISPOSE_TIMEOUT_SECONDS: float = 30.0
+
+# Set on the pool subclass instrument_pool_class() builds, so attach_metrics() can tell an
+# engine whose pool records the checkout wait from one that silently will not.
+_WAIT_RECORDER_ATTRIBUTE = "_checkout_wait_recorder"
 
 
 def _safe_metric_call(func: Callable[[], None], error_msg: str) -> None:
@@ -49,17 +54,93 @@ def _safe_metric_call(func: Callable[[], None], error_msg: str) -> None:
         logger.exception(error_msg)
 
 
+def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> type:
+    """Build a pool class that times the wait for a connection and counts pool timeouts.
+
+    SQLAlchemy has no event for "a checkout was requested", only for one that succeeded, so
+    the time a caller spends queued for a connection cannot be observed from a listener.
+    The returned subclass wraps :meth:`sqlalchemy.pool.Pool.connect`, which runs exactly
+    once per checkout — for a sync and an async engine alike, since
+    ``Engine.raw_connection()`` goes through it — and through which the pool's
+    ``TimeoutError`` passes exactly once. Under an async pool the queue wait is an
+    ``await_only`` inside that call, so the timer spans the whole suspension and measures
+    the time the caller really waited.
+
+    ``_do_get`` is the wrong hook: ``QueuePool`` recurses into it when the non-blocking get
+    comes back empty and the race for an overflow slot is lost, which is exactly the
+    contended case worth measuring, and the wait would be observed twice.
+
+    The recorder lives on the class, so a pool produced by ``recreate()`` after
+    ``dispose()`` keeps recording.
+
+    Args:
+        pool_class: Pool class to instrument — anything :func:`resolve_pool_class` returns,
+            including a class registered with :func:`register_pool_class`.
+        metrics: Recorder to call once per checkout. A raising recorder is logged and
+            swallowed; the checkout itself is never affected.
+
+    Returns:
+        A subclass of ``pool_class`` suitable for ``create_async_engine(poolclass=...)``.
+
+    Examples:
+        >>> poolclass = instrument_pool_class(resolve_pool_class("async_adapted_queue"), metrics)
+        >>> engine = create_async_engine(url, poolclass=poolclass)
+    """
+
+    class InstrumentedPool(pool_class):  # type: ignore[misc, valid-type]
+        """Pool that reports how long each checkout waited."""
+
+        def connect(self) -> Any:
+            started = time.perf_counter()
+            try:
+                connection = super().connect()
+            except SATimeoutError:
+                _safe_metric_call(
+                    lambda: metrics.record_checkout_wait(
+                        duration=time.perf_counter() - started,
+                        timed_out=True,
+                    ),
+                    "Failed to record database checkout timeout",
+                )
+                raise
+            _safe_metric_call(
+                lambda: metrics.record_checkout_wait(duration=time.perf_counter() - started),
+                "Failed to record database checkout wait",
+            )
+            return connection
+
+    setattr(InstrumentedPool, _WAIT_RECORDER_ATTRIBUTE, metrics)
+    InstrumentedPool.__name__ = f"Instrumented{pool_class.__name__}"
+    InstrumentedPool.__qualname__ = InstrumentedPool.__name__
+    return InstrumentedPool
+
+
 def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> None:
     """Attach metrics event listeners to a SQLAlchemy engine.
 
     Registers event handlers for connection checkout, checkin, and error events
     to collect pool statistics and connection metrics.
 
+    The checkout wait and the pool checkout timeout are **not** listeners — no pool event
+    fires for either — and come from the pool class :func:`instrument_pool_class` builds.
+    If ``metrics`` records the wait but the engine's pool was built without it, that is
+    logged as a warning rather than left as a series that never moves.
+
     Args:
         engine: SQLAlchemy ``AsyncEngine`` to attach listeners to.
         metrics: Metrics collector implementing ``PostgresMetricsProtocol``.
     """
     pool = engine.pool
+
+    if isinstance(metrics, CheckoutWaitRecorder) and getattr(type(pool), _WAIT_RECORDER_ATTRIBUTE, None) is None:
+        logger.warning(
+            "%s records the connection checkout wait, but the engine's pool (%s) was not built by "
+            "instrument_pool_class(), so no wait and no pool checkout timeout will ever be recorded. "
+            "Build the engine through AsyncSessionManager, or pass "
+            "instrument_pool_class(pool_class, metrics) as poolclass to create_async_engine().",
+            type(metrics).__name__,
+            type(pool).__name__,
+        )
 
     def record_pool_stats() -> None:
         _safe_metric_call(
@@ -171,7 +252,10 @@ class AsyncSessionManager(Generic[SessionT]):
             isolation_level: Default transaction isolation level (default: None).
             pool_settings: Pool configuration settings (default: None).
             use_orjson: If True, use orjson for JSON serialization (default: False).
-            metrics: Optional metrics collector (default: None).
+            metrics: Optional metrics collector (default: None). One that also implements
+                ``CheckoutWaitRecorder`` gets the pool class wrapped by
+                :func:`instrument_pool_class`, which is what feeds the checkout wait and
+                the pool checkout timeout — neither is reachable from a pool event.
             on_engine_created: Optional callback invoked with ``AsyncEngine`` after creation.
                 Use for OpenTelemetry instrumentation, custom event listeners, etc.
             dispose_timeout: Maximum seconds to wait for engine disposal in :meth:`aclose`
@@ -187,6 +271,10 @@ class AsyncSessionManager(Generic[SessionT]):
         self._close_lock = asyncio.Lock()
         self._dispose_timeout = dispose_timeout
         resolved_poolclass = resolve_pool_class(poolclass)
+        if metrics is not None and isinstance(metrics, CheckoutWaitRecorder):
+            # The wait for a connection is not observable from a pool event, so it has to
+            # be timed inside the pool -- which means deciding the class before the engine.
+            resolved_poolclass = instrument_pool_class(resolved_poolclass, metrics)
         engine_kwargs = build_engine_kwargs(
             echo=echo,
             poolclass=resolved_poolclass,

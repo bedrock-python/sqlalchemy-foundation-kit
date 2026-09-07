@@ -140,6 +140,7 @@ Async session manager with connection pooling and health checks.
       members:
         - AsyncSessionManager
         - attach_metrics
+        - instrument_pool_class
 
 ::: sqlalchemy_foundation_kit.session.builder
     options:
@@ -324,6 +325,7 @@ Observability protocols for monitoring.
         - PostgresMetricsProtocol
         - PoolStatsRecorder
         - CheckoutRecorder
+        - CheckoutWaitRecorder
         - ErrorRecorder
 
 ### Example Usage
@@ -344,7 +346,14 @@ class CustomMetrics:
         pass
     
     def record_checkout(self, duration: float) -> None:
-        # Record connection checkout duration
+        # Record how long a connection was held, checkout to checkin
+        pass
+    
+    def record_checkout_wait(self, duration: float, timed_out: bool = False) -> None:
+        # Record how long a caller waited for a connection, and whether it gave up.
+        # Optional: this method is CheckoutWaitRecorder, which PostgresMetricsProtocol
+        # deliberately does not require. Implement it and the session manager wraps the
+        # pool class so the wait and the pool checkout timeout are recorded too.
         pass
     
     def record_error(self, error_type: str, is_timeout: bool) -> None:

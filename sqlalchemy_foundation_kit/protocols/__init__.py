@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .metrics import (
     CheckoutRecorder,
+    CheckoutWaitRecorder,
     ErrorRecorder,
     PoolStatsRecorder,
     PostgresMetricsProtocol,
@@ -15,6 +16,7 @@ from .metrics import (
 
 __all__ = [
     "CheckoutRecorder",
+    "CheckoutWaitRecorder",
     "ErrorRecorder",
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",

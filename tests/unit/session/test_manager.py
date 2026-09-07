@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.pool import QueuePool
 
 from sqlalchemy_foundation_kit.session.manager import (
     DEFAULT_DISPOSE_TIMEOUT_SECONDS,
@@ -14,6 +18,7 @@ from sqlalchemy_foundation_kit.session.manager import (
     _safe_metric_call,
     attach_metrics,
     attach_search_path,
+    instrument_pool_class,
 )
 
 # ============================================================================
@@ -296,6 +301,189 @@ def test__attach_metrics__pool_without_size__uses_zero() -> None:
 
 
 # ============================================================================
+# instrument_pool_class Tests
+# ============================================================================
+
+
+class _WaitRecorder:
+    """Records every checkout wait the pool reports, in order."""
+
+    def __init__(self) -> None:
+        self.waits: list[tuple[float, bool]] = []
+
+    def record_checkout_wait(self, duration: float, timed_out: bool = False) -> None:
+        self.waits.append((duration, timed_out))
+
+    @property
+    def timeouts(self) -> int:
+        return sum(1 for _duration, timed_out in self.waits if timed_out)
+
+
+def _pool(recorder: _WaitRecorder, timeout: float = 0.1) -> QueuePool:
+    """A one-connection QueuePool over a fake DBAPI, instrumented with ``recorder``."""
+    poolclass = instrument_pool_class(QueuePool, recorder)
+    return cast(
+        "QueuePool",
+        poolclass(Mock, pool_size=1, max_overflow=0, timeout=timeout),
+    )
+
+
+def test__instrument_pool_class__returns_subclass_of_the_original() -> None:
+    # Arrange & Act
+    poolclass = instrument_pool_class(QueuePool, _WaitRecorder())
+
+    # Assert
+    assert issubclass(poolclass, QueuePool)
+    assert poolclass is not QueuePool
+    assert poolclass.__name__ == "InstrumentedQueuePool"
+
+
+def test__instrument_pool_class__successful_checkout__records_the_wait() -> None:
+    # Arrange
+    recorder = _WaitRecorder()
+    pool = _pool(recorder)
+
+    # Act
+    connection = pool.connect()
+    connection.close()
+
+    # Assert
+    assert len(recorder.waits) == 1
+    duration, timed_out = recorder.waits[0]
+    assert timed_out is False
+    assert duration >= 0.0
+
+
+def test__instrument_pool_class__exhausted_pool__counts_the_timeout_and_reraises() -> None:
+    # Arrange: one connection, already checked out, so the next caller can only time out.
+    recorder = _WaitRecorder()
+    pool = _pool(recorder)
+    held = pool.connect()
+
+    # Act
+    with pytest.raises(SATimeoutError):
+        pool.connect()
+
+    # Assert
+    assert recorder.timeouts == 1
+    timed_out_wait = next(duration for duration, timed_out in recorder.waits if timed_out)
+    assert timed_out_wait >= 0.1
+    held.close()
+
+
+def test__instrument_pool_class__measures_the_wait_not_the_time_held() -> None:
+    # Arrange: the first caller holds its connection for HOLD seconds; the second one is
+    # queued behind it the whole time and then gives the connection straight back. What
+    # the checkin listener sees is the mirror image of what the pool made each of them
+    # wait, which is the whole reason the wait needs its own metric.
+    hold_seconds = 0.3
+    recorder = _WaitRecorder()
+    pool = _pool(recorder, timeout=5.0)
+    first = pool.connect()
+
+    def second_caller() -> None:
+        pool.connect().close()
+
+    # Act
+    waiter = threading.Thread(target=second_caller)
+    waiter.start()
+    time.sleep(hold_seconds)
+    first.close()
+    waiter.join()
+
+    # Assert
+    assert recorder.timeouts == 0
+    first_wait, second_wait = (duration for duration, _timed_out in recorder.waits)
+    assert first_wait < hold_seconds / 2
+    assert second_wait >= hold_seconds * 0.8
+
+
+def test__instrument_pool_class__pool_recreated__keeps_recording() -> None:
+    # Arrange: dispose() replaces the pool through recreate(), which a per-instance
+    # recorder would not survive.
+    recorder = _WaitRecorder()
+    pool = _pool(recorder)
+
+    # Act
+    recreated = pool.recreate()
+    recreated.connect().close()
+
+    # Assert
+    assert type(recreated) is type(pool)
+    assert len(recorder.waits) == 1
+
+
+def test__instrument_pool_class__recorder_raises__checkout_still_succeeds() -> None:
+    # Arrange
+    recorder = Mock()
+    recorder.record_checkout_wait.side_effect = RuntimeError("metrics backend is down")
+    poolclass = instrument_pool_class(QueuePool, recorder)
+    pool = poolclass(Mock, pool_size=1, max_overflow=0)
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.logger") as mock_logger:
+        connection = pool.connect()
+
+    # Assert
+    assert connection is not None
+    mock_logger.exception.assert_called_once()
+    connection.close()
+
+
+def test__attach_metrics__pool_not_instrumented__warns_that_the_wait_is_lost() -> None:
+    # Arrange: an engine somebody built themselves, so the pool class never went through
+    # instrument_pool_class and the wait series would stay empty with nobody the wiser.
+    mock_engine = Mock()
+    mock_engine.pool = QueuePool(Mock)
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        with patch("sqlalchemy_foundation_kit.session.manager.logger") as mock_logger:
+            attach_metrics(mock_engine, _WaitRecorder())
+
+    # Assert
+    mock_logger.warning.assert_called_once()
+    assert "instrument_pool_class" in mock_logger.warning.call_args[0][0]
+
+
+def test__attach_metrics__instrumented_pool__does_not_warn() -> None:
+    # Arrange
+    metrics = _WaitRecorder()
+    mock_engine = Mock()
+    mock_engine.pool = instrument_pool_class(QueuePool, metrics)(Mock)
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        with patch("sqlalchemy_foundation_kit.session.manager.logger") as mock_logger:
+            attach_metrics(mock_engine, metrics)
+
+    # Assert
+    mock_logger.warning.assert_not_called()
+
+
+def test__attach_metrics__metrics_without_wait_support__does_not_warn() -> None:
+    # Arrange: an implementation written against PostgresMetricsProtocol alone stays valid
+    # and simply publishes no wait series -- that is not worth a warning on every startup.
+    class OlderMetrics:
+        def record_pool_stats(self, pool_size: int, pool_checked_out: int, pool_overflow: int) -> None: ...
+
+        def record_checkout(self, duration: float) -> None: ...
+
+        def record_error(self, error_type: str, is_timeout: bool = False) -> None: ...
+
+    mock_engine = Mock()
+    mock_engine.pool = QueuePool(Mock)
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        with patch("sqlalchemy_foundation_kit.session.manager.logger") as mock_logger:
+            attach_metrics(mock_engine, OlderMetrics())
+
+    # Assert
+    mock_logger.warning.assert_not_called()
+
+
+# ============================================================================
 # attach_search_path Tests
 # ============================================================================
 
@@ -400,6 +588,48 @@ def test__async_session_manager__init__no_metrics__does_not_attach() -> None:
 
     # Assert
     mock_attach.assert_not_called()
+
+
+def test__async_session_manager__init__metrics_record_the_wait__instruments_the_pool_class() -> None:
+    # Arrange
+    metrics = _WaitRecorder()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine") as mock_create:
+        with patch("sqlalchemy_foundation_kit.session.manager.attach_metrics"):
+            AsyncSessionManager("postgresql+asyncpg://localhost/test", poolclass="queue", metrics=metrics)
+
+    # Assert
+    poolclass = mock_create.call_args[1]["poolclass"]
+    assert issubclass(poolclass, QueuePool)
+    assert poolclass is not QueuePool
+
+
+def test__async_session_manager__init__metrics_without_wait_support__leaves_the_pool_class_alone() -> None:
+    # Arrange
+    class OlderMetrics:
+        def record_pool_stats(self, pool_size: int, pool_checked_out: int, pool_overflow: int) -> None: ...
+
+        def record_checkout(self, duration: float) -> None: ...
+
+        def record_error(self, error_type: str, is_timeout: bool = False) -> None: ...
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine") as mock_create:
+        with patch("sqlalchemy_foundation_kit.session.manager.attach_metrics"):
+            AsyncSessionManager("postgresql+asyncpg://localhost/test", poolclass="queue", metrics=OlderMetrics())
+
+    # Assert
+    assert mock_create.call_args[1]["poolclass"] is QueuePool
+
+
+def test__async_session_manager__init__no_metrics__leaves_the_pool_class_alone() -> None:
+    # Arrange & Act
+    with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine") as mock_create:
+        AsyncSessionManager("postgresql+asyncpg://localhost/test", poolclass="queue")
+
+    # Assert
+    assert mock_create.call_args[1]["poolclass"] is QueuePool
 
 
 def test__async_session_manager__init__search_path__attaches_it() -> None:

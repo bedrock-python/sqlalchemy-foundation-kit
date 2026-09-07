@@ -11,6 +11,7 @@ pytest.importorskip("prometheus_client")
 
 
 from sqlalchemy_foundation_kit.contrib.metrics.postgres import (
+    CONNECTION_WAIT_BUCKETS,
     PostgresMetrics,
     _make_metric_name,
 )
@@ -19,6 +20,15 @@ from sqlalchemy_foundation_kit.contrib.metrics.postgres import (
 def _unique_prefix() -> str:
     """Generate unique prefix to avoid prometheus registry conflicts."""
     return f"test_{uuid.uuid4().hex[:8]}"
+
+
+def _histogram(histogram: object, suffix: str) -> float:
+    """Read the ``_count`` or ``_sum`` sample a histogram currently exposes."""
+    for metric in histogram.collect():  # type: ignore[attr-defined]
+        for sample in metric.samples:
+            if sample.name.endswith(suffix):
+                return float(sample.value)
+    raise AssertionError(f"no {suffix} sample on the histogram")
 
 
 # ============================================================================
@@ -249,6 +259,114 @@ def test__postgres_metrics__record_checkout__zero_duration__succeeds() -> None:
 
     # Assert
     assert metrics.connection_checkout_duration is not None
+
+
+# ============================================================================
+# record_checkout_wait Tests
+# ============================================================================
+
+
+@pytest.mark.unit
+def test__postgres_metrics__record_checkout_wait__observes_into_the_wait_histogram() -> None:
+    # Arrange
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+
+    # Act
+    metrics.record_checkout_wait(duration=0.42)
+
+    # Assert
+    assert _histogram(metrics.connection_checkout_wait, "_count") == 1.0
+    assert _histogram(metrics.connection_checkout_wait, "_sum") == pytest.approx(0.42)
+
+
+@pytest.mark.unit
+def test__postgres_metrics__record_checkout_wait__timed_out__counts_the_pool_timeout() -> None:
+    # Arrange: the pool checkout timeout never reaches handle_error, so this is the only
+    # place it can be counted.
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+
+    # Act
+    metrics.record_checkout_wait(duration=30.0, timed_out=True)
+
+    # Assert
+    assert metrics.connection_timeouts_total._value.get() == 1.0  # type: ignore[attr-defined]
+    assert _histogram(metrics.connection_checkout_wait, "_count") == 1.0
+
+
+@pytest.mark.unit
+def test__postgres_metrics__record_checkout_wait__served__does_not_count_a_timeout() -> None:
+    # Arrange
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+
+    # Act
+    metrics.record_checkout_wait(duration=0.01)
+
+    # Assert
+    assert metrics.connection_timeouts_total._value.get() == 0.0  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test__postgres_metrics__wait_and_held__are_separate_series() -> None:
+    # Arrange: a caller that waited 2 s and then held the connection for 0.05 s. Reading
+    # the wait off the held histogram is exactly the mistake the old single series invited.
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+
+    # Act
+    metrics.record_checkout_wait(duration=2.0)
+    metrics.record_checkout(duration=0.05)
+
+    # Assert
+    assert _histogram(metrics.connection_checkout_wait, "_sum") == pytest.approx(2.0)
+    assert _histogram(metrics.connection_held_duration, "_sum") == pytest.approx(0.05)
+
+
+@pytest.mark.unit
+def test__postgres_metrics__record_checkout__also_feeds_the_deprecated_name() -> None:
+    # Arrange
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+
+    # Act
+    metrics.record_checkout(duration=0.25)
+
+    # Assert
+    assert _histogram(metrics.connection_held_duration, "_sum") == pytest.approx(0.25)
+    assert _histogram(metrics.connection_checkout_duration, "_sum") == pytest.approx(0.25)
+
+
+@pytest.mark.unit
+def test__postgres_metrics__wait_buckets__reach_the_default_pool_timeout() -> None:
+    # Arrange & Act & Assert: a saturated pool times out at pool_timeout, 30 s by default.
+    # A wait histogram that stopped at 5 s would put every one of them in +Inf.
+    assert CONNECTION_WAIT_BUCKETS[-1] >= 30.0
+    assert tuple(sorted(CONNECTION_WAIT_BUCKETS)) == CONNECTION_WAIT_BUCKETS
+
+
+@pytest.mark.unit
+def test__postgres_metrics__publishes_the_documented_series() -> None:
+    # Arrange
+    from prometheus_client import REGISTRY, generate_latest
+
+    prefix = _unique_prefix()
+
+    # Act
+    PostgresMetrics(prefix=prefix)
+    published = {
+        line.split(" ")[2]
+        for line in generate_latest(REGISTRY).decode().splitlines()
+        if line.startswith(f"# HELP {prefix}_") and not line.split(" ")[2].endswith("_created")
+    }
+
+    # Assert
+    assert published == {
+        f"{prefix}_postgres_db_pool_size",
+        f"{prefix}_postgres_db_pool_checked_out",
+        f"{prefix}_postgres_db_pool_overflow",
+        f"{prefix}_postgres_db_connection_checkout_wait_seconds",
+        f"{prefix}_postgres_db_connection_held_duration_seconds",
+        f"{prefix}_postgres_db_connection_checkout_duration_seconds",
+        f"{prefix}_postgres_db_connection_timeouts_total",
+        f"{prefix}_postgres_db_connection_errors_total",
+    }
 
 
 # ============================================================================

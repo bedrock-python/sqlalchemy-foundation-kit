@@ -271,11 +271,50 @@ session_manager = create_async_session_manager(
 | `myapp_postgres_db_pool_size` | Gauge | Current pool size |
 | `myapp_postgres_db_pool_checked_out` | Gauge | Connections currently in use |
 | `myapp_postgres_db_pool_overflow` | Gauge | Overflow connections created |
-| `myapp_postgres_db_connection_checkout_duration_seconds` | Histogram | Time to acquire connection |
+| `myapp_postgres_db_connection_checkout_wait_seconds` | Histogram | Time a caller **waited** for a connection |
+| `myapp_postgres_db_connection_held_duration_seconds` | Histogram | Time a caller **held** a connection, checkout to checkin |
+| `myapp_postgres_db_connection_checkout_duration_seconds` | Histogram | Deprecated alias of the held duration — see below |
 | `myapp_postgres_db_connection_errors_total` | Counter | Database errors by type (`error_type` label) |
-| `myapp_postgres_db_connection_timeouts_total` | Counter | Connection timeout errors |
+| `myapp_postgres_db_connection_timeouts_total` | Counter | Pool checkout timeouts, and `TimeoutError`s during execution |
 
 Without a `prefix` the names are `postgres_db_pool_size` and so on.
+
+**Wait or held — they are not the same number.** The wait is the time spent inside
+`pool.connect()` before a connection is handed out: the queue wait, plus the pre-ping and
+the connect handshake when the pool has to grow. It is the metric that predicts a pool
+outage — it climbs while the pool saturates, and turns into
+`connection_timeouts_total` when it crosses `pool_timeout`. The held duration is the time
+between the `checkout` and `checkin` events, which is query duration seen from the pool: it
+climbs when the database slows down, whether or not the pool is under any pressure. A
+saturated pool moves both, and only the wait tells you which one caused the other.
+
+**`connection_checkout_duration_seconds` is deprecated.** It has always measured the
+*held* duration, despite the name. It is still published, unchanged, so existing dashboards
+keep working, and it will be removed in a future release. Point dashboards at
+`connection_held_duration_seconds` for the same numbers, or at
+`connection_checkout_wait_seconds` if what you actually wanted was the wait.
+
+The wait histogram and the pool-timeout half of the counter are not event listeners —
+SQLAlchemy fires no event when a checkout is *requested* — so they come from the pool class
+the session manager builds. They are populated on any engine created by
+`AsyncSessionManager`, `AsyncSessionManagerBuilder` or `create_async_session_manager`. On
+an engine you build yourself, wrap the pool class:
+
+```python
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy_foundation_kit import resolve_pool_class
+from sqlalchemy_foundation_kit.session.manager import attach_metrics, instrument_pool_class
+
+metrics = PostgresMetrics(prefix="myapp")
+engine = create_async_engine(
+    url,
+    poolclass=instrument_pool_class(resolve_pool_class("async_adapted_queue"), metrics),
+)
+attach_metrics(engine, metrics)
+```
+
+`attach_metrics` logs a warning if the engine's pool was not built this way, rather than
+leaving you with a wait histogram that never moves.
 
 **Expose metrics endpoint:**
 
@@ -295,14 +334,21 @@ async def metrics_endpoint():
 
 ```promql
 # Pool utilization
-(myapp_postgres_pool_checked_out / myapp_postgres_pool_size) * 100
+(myapp_postgres_db_pool_checked_out / myapp_postgres_db_pool_size) * 100
 
-# P95 checkout latency
-histogram_quantile(0.95, 
-  rate(myapp_postgres_checkout_duration_seconds_bucket[5m]))
+# P95 wait for a connection -- the one to alert on
+histogram_quantile(0.95,
+  rate(myapp_postgres_db_connection_checkout_wait_seconds_bucket[5m]))
+
+# Checkouts that gave up waiting
+rate(myapp_postgres_db_connection_timeouts_total[5m])
+
+# P95 time a connection was held -- query latency, seen from the pool
+histogram_quantile(0.95,
+  rate(myapp_postgres_db_connection_held_duration_seconds_bucket[5m]))
 
 # Error rate
-rate(myapp_postgres_errors_total[5m])
+rate(myapp_postgres_db_connection_errors_total[5m])
 ```
 
 ### OpenTelemetry Tracing

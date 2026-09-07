@@ -31,6 +31,7 @@ from .config import (
 # Protocols
 from .protocols import (
     CheckoutRecorder,
+    CheckoutWaitRecorder,
     ErrorRecorder,
     PoolStatsRecorder,
     PostgresMetricsProtocol,
@@ -89,6 +90,7 @@ __all__ = [  # noqa: RUF022
     "QuerySettingsProtocol",
     # Protocols
     "CheckoutRecorder",
+    "CheckoutWaitRecorder",
     "ErrorRecorder",
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",
