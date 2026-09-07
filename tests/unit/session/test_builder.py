@@ -37,6 +37,7 @@ def test__async_session_manager_builder__init__sets_defaults() -> None:
     assert builder._metrics is None
     assert builder._on_engine_created is None
     assert builder._dispose_timeout is None
+    assert builder._search_path is None
     assert builder._extra_kwargs == {}
 
 
@@ -104,6 +105,7 @@ def test__async_session_manager_builder__with_echo__default_true() -> None:
         ("with_json_serialization", (True,), {}),
         ("with_extra_kwargs", (), {"custom": "value"}),
         ("with_dispose_timeout", (30.0,), {}),
+        ("with_search_path", ("app",), {}),
     ],
 )
 def test__async_session_manager_builder__methods__return_self(method_name: str, args: tuple, kwargs: dict) -> None:
@@ -411,6 +413,22 @@ def test__async_session_manager_builder__with_dispose_timeout__sets_timeout() ->
 
 
 # ============================================================================
+# AsyncSessionManagerBuilder - with_search_path Tests
+# ============================================================================
+
+
+def test__async_session_manager_builder__with_search_path__sets_value() -> None:
+    # Arrange
+    builder = AsyncSessionManagerBuilder("postgresql://localhost/test")
+
+    # Act
+    builder.with_search_path("tenant_7, public")
+
+    # Assert
+    assert builder._search_path == "tenant_7, public"
+
+
+# ============================================================================
 # AsyncSessionManagerBuilder - Method Chaining Tests
 # ============================================================================
 
@@ -451,6 +469,7 @@ def test__async_session_manager_builder__method_chaining__all_methods() -> None:
         .with_json_serialization(True)
         .with_extra_kwargs(custom="value")
         .with_dispose_timeout(45.0)
+        .with_search_path("app")
     )
 
     # Assert
@@ -467,6 +486,7 @@ def test__async_session_manager_builder__method_chaining__all_methods() -> None:
     assert builder._use_orjson is True
     assert builder._extra_kwargs["custom"] == "value"
     assert builder._dispose_timeout == 45.0
+    assert builder._search_path == "app"
 
 
 # ============================================================================
@@ -602,6 +622,18 @@ def test__async_session_manager_builder__build__excludes_none_dispose_timeout() 
     assert "dispose_timeout" not in call_kwargs
 
 
+def test__async_session_manager_builder__build__no_search_path__passes_none() -> None:
+    # Arrange
+    builder = AsyncSessionManagerBuilder("postgresql://localhost/test")
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.builder.AsyncSessionManager") as mock_manager_class:
+        builder.build()
+
+    # Assert
+    assert mock_manager_class.call_args[1]["search_path"] is None
+
+
 def test__async_session_manager_builder__build__passes_extra_kwargs() -> None:
     # Arrange
     builder = AsyncSessionManagerBuilder("postgresql://localhost/test").with_extra_kwargs(
@@ -638,6 +670,7 @@ def test__async_session_manager_builder__build__all_params_combined() -> None:
         .with_json_serialization(True)
         .with_extra_kwargs(custom="value")
         .with_dispose_timeout(60.0)
+        .with_search_path("app")
     )
 
     # Act
@@ -659,6 +692,7 @@ def test__async_session_manager_builder__build__all_params_combined() -> None:
     assert call_kwargs["use_orjson"] is True
     assert call_kwargs["custom"] == "value"
     assert call_kwargs["dispose_timeout"] == 60.0
+    assert call_kwargs["search_path"] == "app"
 
 
 # ============================================================================

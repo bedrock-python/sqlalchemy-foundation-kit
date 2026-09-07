@@ -6,9 +6,10 @@ import uuid
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
+from tests.integration.conftest import SEARCH_PATH_SCHEMA, PostgresContainer
 from tests.integration.models import Status, TestUser
 
 # ============================================================================
@@ -427,3 +428,153 @@ async def test__get_transaction__no_isolation_level__leaves_the_server_default(
 
     # Assert
     assert actual == "read committed"
+
+
+# ============================================================================
+# search_path Tests (issue #23 scenario)
+# ============================================================================
+
+
+async def _search_path(session: AsyncSession) -> str:
+    return (await session.execute(text("SHOW search_path"))).scalar_one()  # type: ignore[no-any-return]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_session__search_path__applied_to_the_autobegun_transaction(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act
+    async with schema_session_manager.get_session() as session:
+        actual = await _search_path(session)
+
+    # Assert
+    assert actual == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__search_path__applied_to_the_transaction(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act
+    async with schema_session_manager.get_transaction() as session:
+        actual = await _search_path(session)
+
+    # Assert
+    assert actual == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__search_path_and_isolation_level__both_applied(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act
+    async with schema_session_manager.get_transaction(isolation_level="SERIALIZABLE") as session:
+        search_path = await _search_path(session)
+        isolation = (await session.execute(text("SHOW transaction_isolation"))).scalar_one()
+
+    # Assert
+    assert search_path == SEARCH_PATH_SCHEMA
+    assert isolation == "serializable"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__engine_connect__search_path__applied_outside_any_session(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act
+    async with schema_session_manager.engine.connect() as conn:
+        actual = (await conn.execute(text("SHOW search_path"))).scalar_one()
+
+    # Assert
+    assert actual == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_session__search_path__reapplied_to_the_transaction_after_a_commit(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act: SET LOCAL ends with the transaction; the next one has to set it again
+    async with schema_session_manager.get_session() as session:
+        before = await _search_path(session)
+        await session.commit()
+        after = await _search_path(session)
+
+    # Assert
+    assert before == SEARCH_PATH_SCHEMA
+    assert after == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_transaction__search_path__unqualified_table_resolves_in_the_schema(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+    db_engine: AsyncEngine,
+) -> None:
+    # Act
+    async with schema_session_manager.get_transaction() as session:
+        await session.execute(text("INSERT INTO schema_probe (v) VALUES (1)"))
+
+    # Assert
+    async with db_engine.connect() as conn:
+        count = (await conn.execute(text("SELECT count(*) FROM app.schema_probe"))).scalar_one()
+    assert count == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__get_session__no_search_path__leaves_the_server_default(
+    session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Act: the control case -- nothing is attached when no schema is configured
+    async with session_manager.get_session() as session:
+        actual = await _search_path(session)
+
+    # Assert
+    assert actual == '"$user", public'
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__create_async_session_manager__db_schema__applied_per_transaction(
+    postgres_container: PostgresContainer,
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> None:
+    # Arrange: the reporter's config -- host, credentials, an application name and db_schema
+    pytest.importorskip("pydantic_settings")
+    from pydantic import SecretStr
+
+    from sqlalchemy_foundation_kit.contrib.settings.postgres import BasePostgresConfig, ConnectionSettings
+    from sqlalchemy_foundation_kit.session.factories import create_async_session_manager
+
+    config = BasePostgresConfig(
+        connection=ConnectionSettings(
+            host=postgres_container.get_container_host_ip(),
+            port=int(postgres_container.get_exposed_port(postgres_container.port)),
+            user=postgres_container.username,
+            password=SecretStr(postgres_container.password),
+            database=postgres_container.dbname,
+        ),
+        application_name="probe",
+        db_schema=SEARCH_PATH_SCHEMA,
+        use_orjson_serialization=False,
+    )
+    manager = create_async_session_manager(config)
+
+    # Act
+    try:
+        async with manager.get_session() as session:
+            jit = (await session.execute(text("SHOW jit"))).scalar_one()
+            search_path = await _search_path(session)
+            application_name = (await session.execute(text("SHOW application_name"))).scalar_one()
+    finally:
+        await manager.aclose()
+
+    # Assert: the schema arrives, and jit is whatever the server says -- nothing was sent for it
+    assert search_path == SEARCH_PATH_SCHEMA
+    assert application_name == "probe"
+    assert jit == "on"

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import asyncpg
 import pytest
 
+pytest.importorskip("pydantic_settings")
+
+from pydantic import SecretStr
+
+from sqlalchemy_foundation_kit.contrib.settings.postgres import BasePostgresConfig, ConnectionSettings
 from sqlalchemy_foundation_kit.session.connection import AsyncCConnection
 from sqlalchemy_foundation_kit.session.factories import create_async_session_manager
 
@@ -160,16 +166,9 @@ def test__create_async_session_manager__jit__handled_correctly(
         assert "jit" not in server_settings
 
 
-@pytest.mark.parametrize(
-    "db_schema,should_be_in_settings",
-    [
-        ("public", True),
-        ("custom_schema", True),
-        (None, False),
-    ],
-)
-def test__create_async_session_manager__db_schema__handled_correctly(
-    db_schema: str | None, should_be_in_settings: bool
+@pytest.mark.parametrize("db_schema", ["public", "custom_schema", None])
+def test__create_async_session_manager__db_schema__search_path_on_the_manager_not_in_startup(
+    db_schema: str | None,
 ) -> None:
     # Arrange
     mock_config = Mock()
@@ -189,13 +188,11 @@ def test__create_async_session_manager__db_schema__handled_correctly(
     with patch("sqlalchemy_foundation_kit.session.factories.AsyncSessionManager") as mock_manager_class:
         create_async_session_manager(mock_config)
 
-    # Assert
+    # Assert: a startup parameter never reaches PostgreSQL through a transaction-mode pooler,
+    # so the schema goes to the manager, which applies it per transaction
     call_kwargs = mock_manager_class.call_args[1]
-    server_settings = call_kwargs["connect_args"]["server_settings"]
-    if should_be_in_settings:
-        assert server_settings["search_path"] == db_schema
-    else:
-        assert "search_path" not in server_settings
+    assert "search_path" not in call_kwargs["connect_args"]["server_settings"]
+    assert call_kwargs["search_path"] == db_schema
 
 
 def test__create_async_session_manager__extra_server_settings__merges_with_defaults() -> None:
@@ -562,5 +559,61 @@ def test__create_async_session_manager__all_options__combined() -> None:
     server_settings = connect_args["server_settings"]
     assert server_settings["application_name"] == "override-app"
     assert server_settings["jit"] == "off"
-    assert server_settings["search_path"] == "custom_schema"
+    assert "search_path" not in server_settings
     assert server_settings["timezone"] == "UTC"
+    assert call_kwargs["search_path"] == "custom_schema"
+
+
+# ============================================================================
+# create_async_session_manager - Startup Parameters (issue #23 scenario)
+# ============================================================================
+
+
+def _postgres_config(**overrides: Any) -> BasePostgresConfig:
+    """The issue #23 shape: host, credentials and an application name, nothing else."""
+    return BasePostgresConfig(
+        connection=ConnectionSettings(password=SecretStr("secret"), database="app"),
+        application_name="pgbouncer-lab",
+        **overrides,
+    )
+
+
+def test__create_async_session_manager__default_config__startup_carries_only_application_name() -> None:
+    # Arrange
+    config = _postgres_config()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.factories.AsyncSessionManager") as mock_manager_class:
+        create_async_session_manager(config)
+
+    # Assert: PgBouncer in transaction mode rejects any startup parameter it does not track
+    call_kwargs = mock_manager_class.call_args[1]
+    assert call_kwargs["connect_args"]["server_settings"] == {"application_name": "pgbouncer-lab"}
+    assert call_kwargs["search_path"] is None
+
+
+def test__create_async_session_manager__explicit_jit_off__is_still_a_startup_parameter() -> None:
+    # Arrange
+    config = _postgres_config(jit="off")
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.factories.AsyncSessionManager") as mock_manager_class:
+        create_async_session_manager(config)
+
+    # Assert
+    server_settings = mock_manager_class.call_args[1]["connect_args"]["server_settings"]
+    assert server_settings["jit"] == "off"
+
+
+def test__create_async_session_manager__db_schema__becomes_the_manager_search_path() -> None:
+    # Arrange
+    config = _postgres_config(db_schema="app")
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.factories.AsyncSessionManager") as mock_manager_class:
+        create_async_session_manager(config)
+
+    # Assert
+    call_kwargs = mock_manager_class.call_args[1]
+    assert call_kwargs["connect_args"]["server_settings"] == {"application_name": "pgbouncer-lab"}
+    assert call_kwargs["search_path"] == "app"

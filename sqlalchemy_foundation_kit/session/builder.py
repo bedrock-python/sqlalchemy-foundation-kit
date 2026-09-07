@@ -77,6 +77,7 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
         self._metrics: PostgresMetricsProtocol | None = None
         self._on_engine_created: Callable[[AsyncEngine], None] | None = None
         self._dispose_timeout: float | None = None
+        self._search_path: str | None = None
         self._extra_kwargs: dict[str, object] = {}
 
     def with_echo(self, echo: bool = True) -> AsyncSessionManagerBuilder[SessionT]:
@@ -258,6 +259,22 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
         self._dispose_timeout = timeout
         return self
 
+    def with_search_path(self, search_path: str) -> AsyncSessionManagerBuilder[SessionT]:
+        """Apply a PostgreSQL ``search_path`` to every transaction.
+
+        Issued with ``SET LOCAL`` semantics at the start of each transaction — the one
+        scope a transaction-mode pooler such as PgBouncer honours. See
+        :func:`~sqlalchemy_foundation_kit.session.manager.attach_search_path`.
+
+        Args:
+            search_path: A schema, or a comma-separated list such as ``"tenant_7, public"``.
+
+        Returns:
+            Self for method chaining.
+        """
+        self._search_path = search_path
+        return self
+
     def build(self) -> AsyncSessionManager[SessionT]:
         """Build AsyncSessionManager instance with configured parameters.
 
@@ -284,6 +301,7 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
             "use_orjson": self._use_orjson,
             "metrics": self._metrics,
             "on_engine_created": self._on_engine_created,
+            "search_path": self._search_path,
         }
         if self._dispose_timeout is not None:
             kwargs["dispose_timeout"] = self._dispose_timeout

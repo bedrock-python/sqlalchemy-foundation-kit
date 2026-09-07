@@ -605,29 +605,34 @@ async def wait_for_database(session_manager: AsyncSessionManager) -> None:
 await wait_for_database(session_manager)
 ```
 
-### pgbouncer Compatibility
+### PgBouncer Compatibility
 
-For pgbouncer transaction mode, disable prepared statements:
+`create_async_session_manager` is safe behind PgBouncer in transaction mode as it stands:
+both statement caches default to 0 and the connection class is `AsyncCConnection`, whose
+statement names are unique per connection (both for PgBouncer before 1.22); `jit` is not
+sent unless you set it; and `db_schema` is applied with `SET LOCAL` at the start of every
+transaction rather than as a startup parameter. The one thing left to size is the pool:
+PgBouncer owns the server connections, so `size` is how many client connections this
+process may hold open.
 
 ```python
 from sqlalchemy_foundation_kit.contrib.settings import (
     BasePostgresConfig,
-    QuerySettings,
+    ConnectionSettings,
+    PoolSettings,
 )
 
 config = BasePostgresConfig(
-    connection=...,
-    pool=PoolSettings(
-        size=20,  # pgbouncer manages actual connections
-        max_overflow=0,  # No overflow with pgbouncer
-    ),
-    query=QuerySettings(
-        statement_cache_size=0,  # Required for pgbouncer
-        prepared_statement_cache_size=0,  # Required for pgbouncer
-    ),
-    jit="off",  # Required for pgbouncer
+    connection=ConnectionSettings(host="pgbouncer", port=6432, ...),
+    pool=PoolSettings(size=20, max_overflow=0),
+    application_name="my-service",
+    db_schema="app",
 )
 ```
+
+Do not set `jit="off"` for PgBouncer. It travels as a startup parameter, which PgBouncer in
+transaction mode rejects (`unsupported startup parameter: jit`), so every connection fails.
+The measurements and the reasoning are in [Configuration → PgBouncer](configuration.md#pgbouncer).
 
 ## Custom Types
 

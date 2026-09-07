@@ -18,7 +18,7 @@ Only `sqlalchemy[asyncio]`, `pydantic` and `asyncpg` are required by default —
 ✅ **Single dependency** — All foundation pieces in one place  
 ✅ **Unit of Work pattern** — Transactional consistency with automatic commit/rollback  
 ✅ **Connection pool management** — `AsyncSessionManager` with metrics and health checks  
-✅ **pgbouncer compatible** — Custom connection class for transaction mode  
+✅ **PgBouncer compatible** — A startup packet PgBouncer accepts, `search_path` per transaction, unique statement names  
 ✅ **Observability built-in** — Prometheus metrics + OpenTelemetry tracing  
 ✅ **Type-safe configuration** — Pydantic settings with validation  
 ✅ **Base ORM models** — Pre-configured `Base` with naming conventions and mixins  
