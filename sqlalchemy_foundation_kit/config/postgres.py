@@ -131,9 +131,9 @@ class PostgresSettingsProtocol(Protocol):
         pool: Connection pool settings.
         query: Query execution and transaction settings.
         application_name: Application identifier for connections.
-        db_schema: Optional PostgreSQL schema name.
+        db_schema: Optional PostgreSQL ``search_path``, applied to every transaction.
         use_orjson_serialization: Enable orjson for JSON operations.
-        jit: JIT compilation setting (PgBouncer compatibility).
+        jit: JIT compilation setting, sent as a startup parameter only when not ``None``.
 
     Examples:
         Implementing the protocol:
@@ -144,7 +144,7 @@ class PostgresSettingsProtocol(Protocol):
             ...     application_name: str = "my-app"
             ...     db_schema: str | None = None
             ...     use_orjson_serialization: bool = True
-            ...     jit: str | None = "off"
+            ...     jit: str | None = None
             ...
             ...     def to_dsn(self) -> str:
             ...         return f"postgresql://{self.connection.user}@{self.connection.host}..."

@@ -31,6 +31,13 @@ def create_async_session_manager(
 ) -> AsyncSessionManager[AsyncSession]:
     """Create async session manager with PostgreSQL-specific configuration.
 
+    The startup packet carries ``application_name`` and, only when the config sets it,
+    ``jit``; nothing else, because a transaction-mode pooler such as PgBouncer rejects
+    startup parameters it does not track (``unsupported startup parameter: jit``) or,
+    with ``ignore_startup_parameters``, silently drops them. ``db_schema`` therefore
+    travels as the manager's ``search_path`` and is applied with ``SET LOCAL`` semantics
+    at the start of every transaction, which is the one scope such a pooler honours.
+
     Args:
         postgres_config: PostgreSQL configuration implementing PostgresSettingsProtocol.
         application_name: Optional custom application name. If None, uses postgres_config.application_name.
@@ -41,7 +48,8 @@ def create_async_session_manager(
             which provides pgbouncer transaction-mode compatibility.
         extra_server_settings: Additional PostgreSQL ``server_settings`` to merge with defaults
             (e.g., ``{"statement_timeout": "30000", "timezone": "UTC"}``). User-provided keys
-            override library defaults.
+            override library defaults. These are startup parameters: through PgBouncer only
+            the ones it tracks arrive (``track_extra_parameters``).
         extra_connect_args: Additional asyncpg ``connect_args`` to merge with defaults
             (e.g., ``{"command_timeout": 60}``). User-provided keys override library defaults.
         **kwargs: Additional keyword arguments passed to AsyncSessionManager.
@@ -73,11 +81,11 @@ def create_async_session_manager(
     """
     app_name = application_name or postgres_config.application_name
 
-    # Build server settings with optional overrides
+    # Build server settings with optional overrides. These are startup parameters, so
+    # search_path is deliberately not among them -- see the docstring.
     server_settings: dict[str, str] = {
         "application_name": app_name,
         **({"jit": postgres_config.jit} if postgres_config.jit is not None else {}),
-        **({"search_path": postgres_config.db_schema} if postgres_config.db_schema is not None else {}),
         **(extra_server_settings or {}),
     }
 
@@ -100,5 +108,6 @@ def create_async_session_manager(
         use_orjson=postgres_config.use_orjson_serialization,
         metrics=metrics,
         on_engine_created=on_engine_created,
+        search_path=postgres_config.db_schema,
         **kwargs,
     )

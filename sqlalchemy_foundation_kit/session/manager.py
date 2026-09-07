@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, cast
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -23,6 +23,8 @@ from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
+
     from ..config import PoolSettingsProtocol
     from ..protocols import PostgresMetricsProtocol
 
@@ -100,6 +102,35 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
     event.listen(engine.sync_engine, "handle_error", on_error)
 
 
+def attach_search_path(engine: AsyncEngine, search_path: str) -> None:
+    """Apply ``search_path`` to every transaction the engine begins.
+
+    Registers a ``begin`` listener that issues ``set_config('search_path', …, true)`` —
+    the function form of ``SET LOCAL``, with the value as a bind parameter — as the first
+    statement of each transaction, so the setting lives exactly as long as the transaction
+    does. That is the one scope a transaction-mode pooler such as PgBouncer honours: a
+    startup parameter is rejected or dropped before it reaches PostgreSQL, and a plain
+    ``SET`` on a server connection leaks to whichever client is handed it next.
+
+    Under the asyncpg adapter ``BEGIN`` is sent lazily with the first statement, so the
+    ``set_config`` call lands inside the transaction rather than ahead of it. Every
+    transaction is covered — a session's autobegin, ``session.begin()``, a raw
+    ``engine.connect()``, the one that follows a ``commit()`` — but a statement run with
+    ``isolation_level="AUTOCOMMIT"`` begins none and runs with the server's default.
+
+    Args:
+        engine: SQLAlchemy ``AsyncEngine`` to attach the listener to.
+        search_path: Value for ``search_path`` — a schema, or a comma-separated list such
+            as ``"tenant_7, public"``.
+    """
+    statement = text("SELECT set_config('search_path', :search_path, true)")
+
+    def on_begin(conn: Connection) -> None:
+        conn.execute(statement, {"search_path": search_path})
+
+    event.listen(engine.sync_engine, "begin", on_begin)
+
+
 class AsyncSessionManager(Generic[SessionT]):
     """Manages async database sessions with configurable connection pooling.
 
@@ -124,6 +155,7 @@ class AsyncSessionManager(Generic[SessionT]):
         metrics: PostgresMetricsProtocol | None = None,
         on_engine_created: Callable[[AsyncEngine], None] | None = None,
         dispose_timeout: float = DEFAULT_DISPOSE_TIMEOUT_SECONDS,
+        search_path: str | None = None,
         **kwargs: object,
     ) -> None:
         """Initialize session manager with direct configuration.
@@ -145,6 +177,10 @@ class AsyncSessionManager(Generic[SessionT]):
             dispose_timeout: Maximum seconds to wait for engine disposal in :meth:`aclose`
                 (default: 30.0). Lower this in tests or short-lived environments; raise it
                 if you have long-running transactions that need more time to settle.
+            search_path: PostgreSQL ``search_path`` applied to every transaction with
+                ``SET LOCAL`` semantics, which is what survives a transaction-mode pooler
+                (default: None — nothing is sent, the server default applies). See
+                :func:`attach_search_path`.
             **kwargs: Additional keyword arguments for ``create_async_engine``.
         """
         self._closed = False
@@ -173,6 +209,9 @@ class AsyncSessionManager(Generic[SessionT]):
 
         if metrics:
             attach_metrics(self._engine, metrics)
+
+        if search_path is not None:
+            attach_search_path(self._engine, search_path)
 
         if on_engine_created is not None:
             on_engine_created(self._engine)

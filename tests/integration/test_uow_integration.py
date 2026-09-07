@@ -7,8 +7,10 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
 from sqlalchemy_foundation_kit.uow.enums import IsolationLevel
 from sqlalchemy_foundation_kit.uow.sqlalchemy import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction
+from tests.integration.conftest import SEARCH_PATH_SCHEMA
 from tests.integration.models import TestUser
 
 
@@ -288,3 +290,99 @@ async def test__transaction__invalid_isolation_level__raises_value_error(
     with pytest.raises(ValueError, match="Invalid isolation level"):
         async with uow.transaction(isolation_level="NOT A LEVEL"):
             pass
+
+
+# ============================================================================
+# search_path Tests (issue #23 scenario)
+# ============================================================================
+
+
+@pytest.fixture
+def schema_uow(
+    schema_session_manager: AsyncSessionManager[AsyncSession],
+) -> AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction]:
+    return AsyncSQLAlchemyUnitOfWork(
+        schema_session_manager.session_maker, transaction_factory=AsyncSQLAlchemyUowTransaction
+    )
+
+
+async def _search_path(session: AsyncSession) -> str:
+    return (await session.execute(text("SHOW search_path"))).scalar_one()  # type: ignore[no-any-return]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__search_path__applied_to_the_transaction(
+    schema_uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with schema_uow.transaction() as tx:
+        actual = await _search_path(tx.session)
+
+    # Assert
+    assert actual == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__search_path__applied_to_the_transaction(
+    schema_uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with schema_uow.query() as qx:
+        actual = await _search_path(qx.session)
+
+    # Assert
+    assert actual == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__search_path_and_isolation_level__both_applied(
+    schema_uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with schema_uow.transaction(isolation_level=IsolationLevel.SERIALIZABLE) as tx:
+        search_path = await _search_path(tx.session)
+        isolation = await _transaction_isolation(tx.session)
+
+    # Assert
+    assert search_path == SEARCH_PATH_SCHEMA
+    assert isolation == "serializable"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__transaction__search_path__held_inside_and_after_a_savepoint(
+    schema_uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with schema_uow.transaction() as tx:
+        async with tx.savepoint():
+            inside = await _search_path(tx.session)
+        after = await _search_path(tx.session)
+
+    # Assert
+    assert inside == SEARCH_PATH_SCHEMA
+    assert after == SEARCH_PATH_SCHEMA
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__managed_session__search_path__reapplied_after_the_caller_commits(
+    schema_uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act: the commit ends the transaction the schema was set on; the next statement
+    # autobegins a new one, which has to see the schema again
+    async with schema_uow.managed_session() as (_tx, session):
+        before = await _search_path(session)
+        await session.execute(text("INSERT INTO schema_probe (v) VALUES (1)"))
+        await session.commit()
+        after = await _search_path(session)
+        count = (await session.execute(text("SELECT count(*) FROM schema_probe"))).scalar_one()
+        await session.rollback()
+
+    # Assert
+    assert before == SEARCH_PATH_SCHEMA
+    assert after == SEARCH_PATH_SCHEMA
+    assert count == 1

@@ -28,6 +28,8 @@ except ImportError:
 from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
 from tests.integration.models import Base
 
+SEARCH_PATH_SCHEMA = "app"
+
 
 def asyncpg_url(container: PostgresContainer) -> str:
     """Rewrite the container's connection URL onto the asyncpg driver."""
@@ -112,6 +114,30 @@ async def session_manager(
     manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager(
         asyncpg_url(postgres_container),
         poolclass="async_adapted_queue",
+    )
+    yield manager
+    await manager.aclose()
+
+
+@pytest_asyncio.fixture
+async def schema_session_manager(
+    postgres_container: PostgresContainer,
+    db_engine: AsyncEngine,
+) -> AsyncGenerator[AsyncSessionManager[AsyncSession], None]:
+    """An AsyncSessionManager whose transactions run with ``search_path = app``.
+
+    The schema holds one table, ``app.schema_probe``, so a test can prove an unqualified
+    name resolves there; it starts empty for every test.
+    """
+    async with db_engine.begin() as conn:
+        await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SEARCH_PATH_SCHEMA}"))
+        await conn.execute(text(f"CREATE TABLE IF NOT EXISTS {SEARCH_PATH_SCHEMA}.schema_probe (v int)"))
+        await conn.execute(text(f"TRUNCATE TABLE {SEARCH_PATH_SCHEMA}.schema_probe"))
+
+    manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager(
+        asyncpg_url(postgres_container),
+        poolclass="async_adapted_queue",
+        search_path=SEARCH_PATH_SCHEMA,
     )
     yield manager
     await manager.aclose()

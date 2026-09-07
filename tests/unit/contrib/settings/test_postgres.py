@@ -413,7 +413,7 @@ def test__base_postgres_config__repr__masks_password() -> None:
 
 
 @pytest.mark.unit
-def test__base_postgres_config__default_jit_off__succeeds() -> None:
+def test__base_postgres_config__default_jit__is_none() -> None:
     # Arrange & Act
     config = BasePostgresConfig(
         connection=ConnectionSettings(
@@ -423,8 +423,9 @@ def test__base_postgres_config__default_jit_off__succeeds() -> None:
         application_name="test",
     )
 
-    # Assert
-    assert config.jit == "off"
+    # Assert: nothing is sent, so the server's own setting applies -- and a transaction-mode
+    # PgBouncer, which rejects the parameter, accepts the connection
+    assert config.jit is None
 
 
 @pytest.mark.unit

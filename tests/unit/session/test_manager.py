@@ -13,6 +13,7 @@ from sqlalchemy_foundation_kit.session.manager import (
     AsyncSessionManager,
     _safe_metric_call,
     attach_metrics,
+    attach_search_path,
 )
 
 # ============================================================================
@@ -295,6 +296,44 @@ def test__attach_metrics__pool_without_size__uses_zero() -> None:
 
 
 # ============================================================================
+# attach_search_path Tests
+# ============================================================================
+
+
+def test__attach_search_path__registers_begin_listener() -> None:
+    # Arrange
+    mock_engine = Mock()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
+        attach_search_path(mock_engine, "app")
+
+    # Assert
+    mock_event.listen.assert_called_once()
+    target, identifier, _on_begin = mock_event.listen.call_args[0]
+    assert target == mock_engine.sync_engine
+    assert identifier == "begin"
+
+
+def test__attach_search_path__on_begin__sets_search_path_locally_with_a_bind_parameter() -> None:
+    # Arrange
+    mock_engine = Mock()
+    mock_conn = Mock()
+    with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
+        attach_search_path(mock_engine, "tenant_7, public")
+    on_begin = mock_event.listen.call_args[0][2]
+
+    # Act
+    on_begin(mock_conn)
+
+    # Assert
+    mock_conn.execute.assert_called_once()
+    statement, params = mock_conn.execute.call_args[0]
+    assert str(statement) == "SELECT set_config('search_path', :search_path, true)"
+    assert params == {"search_path": "tenant_7, public"}
+
+
+# ============================================================================
 # AsyncSessionManager - Initialization Tests
 # ============================================================================
 
@@ -357,6 +396,26 @@ def test__async_session_manager__init__no_metrics__does_not_attach() -> None:
     # Arrange & Act
     with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine"):
         with patch("sqlalchemy_foundation_kit.session.manager.attach_metrics") as mock_attach:
+            AsyncSessionManager("postgresql://localhost/test")
+
+    # Assert
+    mock_attach.assert_not_called()
+
+
+def test__async_session_manager__init__search_path__attaches_it() -> None:
+    # Arrange & Act
+    with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine"):
+        with patch("sqlalchemy_foundation_kit.session.manager.attach_search_path") as mock_attach:
+            manager = AsyncSessionManager("postgresql://localhost/test", search_path="app")
+
+    # Assert
+    mock_attach.assert_called_once_with(manager._engine, "app")
+
+
+def test__async_session_manager__init__no_search_path__does_not_attach() -> None:
+    # Arrange & Act
+    with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine"):
+        with patch("sqlalchemy_foundation_kit.session.manager.attach_search_path") as mock_attach:
             AsyncSessionManager("postgresql://localhost/test")
 
     # Assert

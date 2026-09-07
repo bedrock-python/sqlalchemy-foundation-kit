@@ -11,7 +11,7 @@
 | Install | `pip install sqlalchemy-foundation-kit` · extras: `settings`, `metrics`, `orjson`, `dishka`, `dependency-injector`, `telemetry`, `all` |
 | Async | the whole library. `AsyncEngine`, `AsyncSession`, `asyncpg` |
 | Sync | none. There is no sync mirror and no sync entry point |
-| Version | everything below was read from the source this site was built from. Three calls described here do not work on 0.2.0 — see [fixed since 0.2.0](#fixed-since-020) |
+| Version | everything below was read from the source this site was built from. Some calls described here do not work on 0.2.0 or 0.2.1 — see [fixed since 0.2.0](#fixed-since-020) |
 | Source | <https://github.com/bedrock-python/sqlalchemy-foundation-kit> |
 
 ## How to read this page
@@ -27,8 +27,8 @@ docstrings in the source.
 
 Top to bottom before writing code. [Rules that hold or break the code](#rules-that-hold-or-break-the-code)
 is the section correctness lives in, and it is followed by the short list of calls that
-are [fixed since 0.2.0](#fixed-since-020) — if the installed version is 0.2.0, those
-raise before they reach the database. Every name used below is in the public API; if you
+are [fixed since 0.2.0](#fixed-since-020) — on the version each row names, those fail
+before they reach the database. Every name used below is in the public API; if you
 need something not listed here, fetch the page the [documentation map](#documentation-map)
 points at rather than guessing a method that sounds plausible.
 
@@ -137,8 +137,9 @@ asyncio.run(main())
 ```
 
 With the `settings` extra, `create_async_session_manager(config)` builds the same manager
-from a `PostgresSettingsProtocol` and fills in the pgbouncer-safe defaults
-(`AsyncCConnection`, `application_name`, `search_path`, `jit`, statement caches) for you.
+from a `PostgresSettingsProtocol` and fills in the PgBouncer-safe defaults for you:
+`AsyncCConnection`, both statement caches at 0, `application_name` as the only startup
+parameter, and `db_schema` applied per transaction as `search_path` (rule 16).
 
 ## The API
 
@@ -162,8 +163,11 @@ from the submodule named beside it further down.
 
 `AsyncSessionManager(url, echo=False, poolclass="null", session_class=None,
 expire_on_commit=False, connect_args=None, isolation_level=None, pool_settings=None,
-use_orjson=False, metrics=None, on_engine_created=None, dispose_timeout=30.0, **kwargs)` —
-`**kwargs` reach `create_async_engine`.
+use_orjson=False, metrics=None, on_engine_created=None, dispose_timeout=30.0,
+search_path=None, **kwargs)` — `**kwargs` reach `create_async_engine`. `search_path`
+attaches a `begin` listener to the engine that runs `set_config('search_path', …, true)` —
+`SET LOCAL` — as the first statement of every transaction, autobegun ones included;
+nothing is attached when it is `None`.
 
 | Member | What it does |
 |---|---|
@@ -182,21 +186,23 @@ After `aclose()`, `get_session()` and `get_transaction()` raise
 `.with_session_class(cls)`, `.with_expire_on_commit(bool)`, `.with_connect_args(**kw)`,
 `.with_isolation_level(str)`, `.with_metrics(m)`, `.with_callbacks(on_engine_created=fn)`,
 `.with_json_serialization(orjson=True)`, `.with_extra_kwargs(**kw)`,
-`.with_dispose_timeout(float)`, `.build()`. A builder is reusable: `build()` does not
-consume it.
+`.with_dispose_timeout(float)`, `.with_search_path(str)`, `.build()`. A builder is
+reusable: `build()` does not consume it.
 
 `create_async_session_manager(postgres_config, application_name=None, metrics=None,
 on_engine_created=None, connection_class=None, extra_server_settings=None,
 extra_connect_args=None, **kwargs)` takes a `PostgresSettingsProtocol` and returns a
-manager. It defaults `connection_class` to `AsyncCConnection`, sets `server_settings` from
-`application_name`, `jit` and `db_schema` (as `search_path`), and passes both statement
-cache sizes through. Your keys in `extra_server_settings` / `extra_connect_args` win over
-the library's.
+manager. It defaults `connection_class` to `AsyncCConnection`, sends `application_name` —
+and `jit`, only when the config sets it — as `server_settings`, hands `db_schema` to the
+manager as `search_path`, and passes both statement cache sizes through. Your keys in
+`extra_server_settings` / `extra_connect_args` win over the library's; `server_settings`
+are startup parameters, so read rule 16 before adding one.
 
-`attach_metrics(engine, metrics)` — in `sqlalchemy_foundation_kit.session.manager`, not
-re-exported — wires the pool listeners onto an engine you built yourself. The manager
-calls it when `metrics` is passed. A raising metrics callback is logged and swallowed,
-never propagated.
+`attach_metrics(engine, metrics)` and `attach_search_path(engine, search_path)` — in
+`sqlalchemy_foundation_kit.session.manager`, not re-exported — wire the pool listeners,
+respectively the per-transaction `search_path`, onto an engine you built yourself. The
+manager calls them when `metrics` / `search_path` is passed. A raising metrics callback is
+logged and swallowed, never propagated.
 
 ### The unit of work
 
@@ -293,7 +299,7 @@ With the `settings` extra, `sqlalchemy_foundation_kit.contrib.settings` implemen
 | `ConnectionSettings` | `host="localhost"`, `port=5432` (1–65535), `user="postgres"`, `password: SecretStr` **required**, `database: str` **required** |
 | `PoolSettings` | `kind="async_adapted_queue"`, `size=10`, `max_overflow=20`, `pre_ping=True`, `recycle=3600`, `timeout=30.0`. `kind="static"` with `max_overflow > 0` raises |
 | `QuerySettings` | `echo=False`, `statement_cache_size=0`, `prepared_statement_cache_size=0`, `isolation_level=None` |
-| `BasePostgresConfig` | `connection` **required**, `pool`, `query`, `application_name: str` **required**, `db_schema=None`, `use_orjson_serialization=True`, `jit="off"`, `metrics_enabled=False`. `to_dsn(driver="asyncpg", mask_password=False)`; `__repr__` prints the masked DSN |
+| `BasePostgresConfig` | `connection` **required**, `pool`, `query`, `application_name: str` **required**, `db_schema=None`, `use_orjson_serialization=True`, `jit=None`, `metrics_enabled=False`. `to_dsn(driver="asyncpg", mask_password=False)`; `__repr__` prints the masked DSN. `db_schema` is a `search_path` value applied per transaction (rule 16); `jit` is a startup parameter and is sent only when set |
 | `BasePostgresMigrationsConfig` | `postgres: BasePostgresConfig`, with `env_nested_delimiter="__"` and `extra="ignore"` |
 
 `BasePostgresConfig` declares no `model_config` of its own, so it reads environment
@@ -391,17 +397,34 @@ decorator.
     metrics backend is logged at exception level and discarded, and the query proceeds.
 15. **Close the manager.** `await manager.aclose()` disposes the engine under a shield and
     a `dispose_timeout` (30s). Skipping it leaks connections; calling it twice is fine.
+16. **Through PgBouncer in transaction mode, only `SET LOCAL` and the server's own settings
+    hold.** asyncpg `server_settings` are startup parameters. PgBouncer forwards the ones it
+    tracks (`client_encoding`, `datestyle`, `timezone`, `standard_conforming_strings`,
+    `application_name`, plus `track_extra_parameters`), refuses the connection on any other
+    (`unsupported startup parameter: jit`), and with `ignore_startup_parameters` drops them
+    silently. So `jit` defaults to `None` and is sent only when set, and `db_schema` is
+    applied with `SET LOCAL search_path` as the first statement of every transaction — each
+    `transaction()`, `query()`, `managed_session()`, `get_session()`, `get_transaction()`
+    and `engine.connect()` block, and the transaction after a `commit()` in the same
+    session. Not covered: a statement under `isolation_level="AUTOCOMMIT"`, which begins no
+    transaction. To have the schema without the round-trip use `ALTER ROLE … SET
+    search_path`, `ALTER DATABASE … SET`, or schema-qualified metadata. A plain `SET` on a
+    connection leaks to the next client through a pooler; never issue one in a `connect`
+    listener. Statement caches stay at 0 and `AsyncCConnection` stays, for PgBouncer before
+    1.22 (`max_prepared_statements=0`); 1.22+ tracks prepared statements itself.
 
 ### Fixed since 0.2.0
 
-Three published entry points raise before they reach the database on 0.2.0. They work on
-current versions; the workaround column is what to do if the installed version is 0.2.0.
+Three published entry points raise before they reach the database on 0.2.0, and on 0.2.1
+the PgBouncer-safe defaults cannot connect through PgBouncer. All work on current versions;
+the workaround column is what to do on the version the row names.
 
-| Call | What 0.2.0 does | Workaround on 0.2.0 |
+| Call | What it does on that version | Workaround there |
 |---|---|---|
-| `manager.get_transaction()`, with or without `isolation_level` | `TypeError: Session.__init__() got an unexpected keyword argument 'execution_options'` — the argument was passed to the session factory unconditionally | `async with manager.get_session() as s, s.begin():`, or the unit of work |
-| `uow.transaction(isolation_level=…)`, `uow.managed_session(isolation_level=…)`, `uow.query(isolation_level=…)` | `InvalidRequestError: This connection has already initialized a SQLAlchemy Transaction()… isolation_level may not be altered` — the level was applied after the connection had autobegun | set the level on the engine: `AsyncSessionManager(..., isolation_level="SERIALIZABLE")` or `QuerySettings(isolation_level=...)` |
-| `import sqlalchemy_foundation_kit.contrib.di` (or `.contrib.dependency_injector`) without its extra | `AttributeError: 'NoneType' object has no attribute 'APP'` (resp. `'DeclarativeContainer'`) instead of the intended `ImportError` | install the extra; the message is not the one the code meant to give you |
+| `manager.get_transaction()`, with or without `isolation_level` (0.2.0) | `TypeError: Session.__init__() got an unexpected keyword argument 'execution_options'` — the argument was passed to the session factory unconditionally | `async with manager.get_session() as s, s.begin():`, or the unit of work |
+| `uow.transaction(isolation_level=…)`, `uow.managed_session(isolation_level=…)`, `uow.query(isolation_level=…)` (0.2.0) | `InvalidRequestError: This connection has already initialized a SQLAlchemy Transaction()… isolation_level may not be altered` — the level was applied after the connection had autobegun | set the level on the engine: `AsyncSessionManager(..., isolation_level="SERIALIZABLE")` or `QuerySettings(isolation_level=...)` |
+| `import sqlalchemy_foundation_kit.contrib.di` (or `.contrib.dependency_injector`) without its extra (0.2.0) | `AttributeError: 'NoneType' object has no attribute 'APP'` (resp. `'DeclarativeContainer'`) instead of the intended `ImportError` | install the extra; the message is not the one the code meant to give you |
+| `create_async_session_manager(config)` through PgBouncer in transaction mode (0.2.1 and earlier) | `jit="off"` was the default and `db_schema` went as `search_path`, both as startup parameters: a default PgBouncer refuses every connection with `ProtocolViolationError: unsupported startup parameter: jit`; with `ignore_startup_parameters=jit,search_path` it connects and silently drops both, so every query lands in `public` | `jit=None`, `db_schema=None`, and `ALTER ROLE … SET search_path` on the server |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,
 `REPEATABLE_READ`, `SERIALIZABLE`, whose values are the PostgreSQL spellings with spaces —
@@ -498,6 +521,17 @@ manager = AsyncSessionManager("postgresql+asyncpg://…")
 manager = AsyncSessionManager("postgresql+asyncpg://…", poolclass="async_adapted_queue")
 ```
 
+```python
+# WRONG — both are startup parameters; PgBouncer in transaction mode refuses the connection,
+# or with ignore_startup_parameters drops them and every query lands in public
+config = BasePostgresConfig(..., jit="off")                      # "for pgbouncer"
+manager = create_async_session_manager(config, extra_server_settings={"search_path": "app"})
+
+# RIGHT — send nothing PgBouncer will not carry; the schema is applied per transaction
+config = BasePostgresConfig(..., db_schema="app")                # jit stays None
+manager = create_async_session_manager(config)
+```
+
 ## Errors
 
 The library defines no exception classes of its own. It raises the standard ones and lets
@@ -513,6 +547,7 @@ SQLAlchemy's through untouched.
 | `TypeError` | a value orjson cannot serialize; `manager.get_transaction()` on 0.2.0 (see above) |
 | `sqlalchemy.exc.IllegalStateChangeError` | one session driven by two tasks at once (rule 6) |
 | `sqlalchemy.exc.InvalidRequestError` | `isolation_level` on a unit-of-work method on 0.2.0 (see above) |
+| `asyncpg.exceptions.ProtocolViolationError` | `unsupported startup parameter: …` — a `server_settings` key PgBouncer does not track (rule 16); on 0.2.1 the default `jit` did this on every connection |
 | `sqlalchemy.exc.IntegrityError`, `OperationalError`, … | the database refused the statement. Inside `tx.savepoint()` these are re-raised with the surrounding transaction still usable; anywhere else they roll the whole block back |
 
 ## Documentation map

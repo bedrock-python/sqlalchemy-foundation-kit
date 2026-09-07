@@ -98,9 +98,12 @@ class BasePostgresConfig(BaseSettings):
         pool: Connection pool configuration (size, overflow, timeouts).
         query: Query execution settings (echo, caching, isolation level).
         application_name: Application name for connection identification.
-        db_schema: Optional PostgreSQL schema name.
+        db_schema: Optional PostgreSQL ``search_path`` — a schema, or a comma-separated
+            list — applied to every transaction with ``SET LOCAL`` semantics.
         use_orjson_serialization: Use orjson for JSON serialization (requires orjson).
-        jit: JIT compilation setting (off/on) for PgBouncer compatibility.
+        jit: JIT compilation setting (off/on), sent as a startup parameter only when set.
+            ``None`` (the default) sends nothing and leaves the server's own setting; a
+            transaction-mode PgBouncer rejects the parameter unless it tracks it.
         metrics_enabled: Enable connection pool metrics collection.
 
     Examples:
@@ -125,12 +128,18 @@ class BasePostgresConfig(BaseSettings):
 
     # Top-level settings
     application_name: str = Field(description="Application name for PostgreSQL")
-    db_schema: str | None = Field(default=None, description="PostgreSQL schema name")
+    db_schema: str | None = Field(
+        default=None,
+        description="PostgreSQL search_path (a schema or a comma-separated list), applied to every transaction",
+    )
     use_orjson_serialization: bool = Field(
         default=True,
         description="Use orjson for JSON serialization (requires orjson installed)",
     )
-    jit: PostgresJit | None = Field(default="off", description="JIT setting (off/on)")
+    jit: PostgresJit | None = Field(
+        default=None,
+        description="JIT setting (off/on), sent as a startup parameter only when set",
+    )
     metrics_enabled: bool = Field(default=False, description="Enable PostgreSQL metrics")
 
     def __repr__(self) -> str:
