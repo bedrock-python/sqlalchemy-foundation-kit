@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.3.0...sqlalchemy-foundation-kit-v0.4.0) (2026-09-07)
+
+
+### Features
+
+* measure the wait for a pool connection, and count pool checkout timeouts ([#27](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/27)) ([78c9d7e](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/78c9d7e2c05052090276bce08219047849cd6dbb))
+
 ## [0.3.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.2.1...sqlalchemy-foundation-kit-v0.3.0) (2026-09-07)
 
 

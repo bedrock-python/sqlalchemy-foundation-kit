@@ -65,7 +65,7 @@ from .uow import (
 try:
     __version__ = version("sqlalchemy-foundation-kit")
 except PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.3.0"
+    __version__ = "0.4.0"
 
 __all__ = [  # noqa: RUF022
     # Base ORM
