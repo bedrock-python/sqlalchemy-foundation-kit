@@ -33,7 +33,7 @@ Every SQLAlchemy-based service typically needs:
 1. **Configuration management** — DSN construction, pool settings, query options
 2. **Session lifecycle** — Context managers, commit/rollback logic, cleanup
 3. **Transaction management** — Unit of Work pattern with nested transactions
-4. **Observability** — Metrics for pool size, checkout duration, query errors
+4. **Observability** — Metrics for pool size, checkout wait, query errors
 5. **Base models** — Naming conventions, timestamp mixins, custom types
 6. **DI wiring** — Providers for session makers, UoW, repositories
 
@@ -225,7 +225,7 @@ Pydantic-based configuration models:
 
 Prometheus metrics for connection pool:
 
-- `PostgresMetrics` — Pool size, checked out connections, checkout duration, errors
+- `PostgresMetrics` — Pool size, checked out connections, checkout wait, held duration, errors
 - Tracks health checks, pool exhaustion, timeouts
 
 #### `contrib.di` (requires `[dishka]`)

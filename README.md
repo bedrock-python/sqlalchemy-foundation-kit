@@ -243,7 +243,7 @@ from sqlalchemy_foundation_kit.contrib.settings import (
 from sqlalchemy_foundation_kit.contrib.metrics import PostgresMetrics
 ```
 - `PostgresMetrics` — Prometheus metrics for connection pool
-- Tracks: pool size, checked out connections, checkout duration, errors
+- Tracks: pool size, checked out connections, checkout wait, held duration, timeouts, errors
 
 #### `contrib.di` (requires `[dishka]`)
 ```python

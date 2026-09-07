@@ -560,6 +560,14 @@ BasePostgresConfig(
 )
 ```
 
+The series to watch is `postgres_db_connection_checkout_wait_seconds` — how long callers
+wait for a connection. It climbs before anything fails, and when it reaches the `timeout`
+above, callers start getting `sqlalchemy.exc.TimeoutError` and
+`postgres_db_connection_timeouts_total` starts moving. A rising
+`postgres_db_connection_held_duration_seconds` with a flat wait is a slower database, not a
+small pool; a rising wait with a flat held duration is a pool that needs more connections.
+See [Advanced → Prometheus Metrics](advanced.md#prometheus-metrics) for the full list.
+
 ## Next Steps
 
 - **[Advanced Usage](advanced.md)** — Unit of Work, metrics, telemetry

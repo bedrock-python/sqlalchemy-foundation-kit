@@ -11,7 +11,7 @@ try:
 except ImportError:
     HAS_PROMETHEUS = False
 
-# Default buckets for connection checkout duration (seconds)
+# Default buckets for how long a connection was held (seconds)
 CONNECTION_CHECKOUT_BUCKETS: tuple[float, ...] = (
     0.001,
     0.005,
@@ -24,6 +24,25 @@ CONNECTION_CHECKOUT_BUCKETS: tuple[float, ...] = (
     1.0,
     2.5,
     5.0,
+)
+
+# Default buckets for the wait for a connection from the pool (seconds). The range runs to
+# 30 s, the default ``pool_timeout``, so a saturated pool fills the top buckets instead of
+# collapsing into +Inf just when the histogram is worth reading.
+CONNECTION_WAIT_BUCKETS: tuple[float, ...] = (
+    0.001,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
 )
 
 
@@ -43,12 +62,19 @@ class PostgresMetrics:
         - postgres_db_pool_size: Current database connection pool size.
         - postgres_db_pool_checked_out: Number of connections currently checked out.
         - postgres_db_pool_overflow: Number of connections over pool_size (within max_overflow).
-        - postgres_db_connection_checkout_duration_seconds: Time to acquire connection from pool.
+        - postgres_db_connection_checkout_wait_seconds: Time a caller waited for a connection.
+        - postgres_db_connection_held_duration_seconds: Time a connection was held by its caller.
+        - postgres_db_connection_checkout_duration_seconds: Deprecated alias of the held duration,
+          published unchanged for one more minor release.
         - postgres_db_connection_timeouts_total: Number of connection checkout timeouts.
         - postgres_db_connection_errors_total: Number of connection errors.
 
     Labels:
         - error_type: Type of connection error (for errors_total).
+
+    The wait histogram and the timeout counter are fed by the instrumented pool class the
+    session manager builds, so they only move on an engine created by
+    ``AsyncSessionManager`` (or one whose pool went through ``instrument_pool_class``).
     """
 
     def __init__(self, prefix: str | None = None) -> None:
@@ -74,9 +100,19 @@ class PostgresMetrics:
             _make_metric_name("postgres_db_pool_overflow", prefix),
             "Number of connections over pool_size (within max_overflow)",
         )
+        self.connection_checkout_wait = Histogram(
+            _make_metric_name("postgres_db_connection_checkout_wait_seconds", prefix),
+            "Time a caller waited to acquire a connection from the pool",
+            buckets=list(CONNECTION_WAIT_BUCKETS),
+        )
+        self.connection_held_duration = Histogram(
+            _make_metric_name("postgres_db_connection_held_duration_seconds", prefix),
+            "Time a connection was held by its caller, from checkout to checkin",
+            buckets=list(CONNECTION_CHECKOUT_BUCKETS),
+        )
         self.connection_checkout_duration = Histogram(
             _make_metric_name("postgres_db_connection_checkout_duration_seconds", prefix),
-            "Time to acquire connection from pool",
+            "Deprecated: held duration, published under its old name. Use postgres_db_connection_held_duration_seconds",
             buckets=list(CONNECTION_CHECKOUT_BUCKETS),
         )
         self.connection_timeouts_total = Counter(
@@ -104,8 +140,28 @@ class PostgresMetrics:
         self,
         duration: float,
     ) -> None:
-        """Record a database connection checkout from the pool."""
+        """Record how long a connection was held, from checkout to checkin.
+
+        Observed into ``postgres_db_connection_held_duration_seconds`` and, until the
+        deprecated name is dropped, into ``postgres_db_connection_checkout_duration_seconds``
+        as well.
+        """
+        self.connection_held_duration.observe(duration)
         self.connection_checkout_duration.observe(duration)
+
+    def record_checkout_wait(
+        self,
+        duration: float,
+        timed_out: bool = False,
+    ) -> None:
+        """Record the wait for a connection from the pool, and count a pool timeout.
+
+        A pool checkout timeout is raised before any DBAPI call, so it never reaches the
+        engine's ``handle_error`` listener; this is the only place it is counted.
+        """
+        self.connection_checkout_wait.observe(duration)
+        if timed_out:
+            self.connection_timeouts_total.inc()
 
     def record_error(
         self,
