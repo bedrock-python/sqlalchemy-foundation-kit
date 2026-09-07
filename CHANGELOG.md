@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.2.1...sqlalchemy-foundation-kit-v0.3.0) (2026-09-07)
+
+
+### Features
+
+* stop sending jit and search_path as startup parameters ([#24](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/24)) ([704c343](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/704c343b932b15f0c6ee434f2fc80ab4732b0f80))
+
 ## [0.2.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.2.0...sqlalchemy-foundation-kit-v0.2.1) (2026-09-06)
 
 
