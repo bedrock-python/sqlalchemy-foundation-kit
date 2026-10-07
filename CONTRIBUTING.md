@@ -7,7 +7,7 @@ Thank you for your interest in contributing! This document covers everything you
 ```bash
 git clone https://github.com/bedrock-python/sqlalchemy-foundation-kit.git
 cd sqlalchemy-foundation-kit
-uv sync --group dev
+uv sync --group dev --all-extras
 uv run pre-commit install --hook-type commit-msg
 ```
 
