@@ -102,22 +102,32 @@ class CheckoutWaitRecorder(Protocol):
         Args:
             duration: Seconds spent inside ``pool.connect()`` — the queue wait, and the
                 pre-ping round trip and connect handshake when the pool had to grow.
-            timed_out: True if the wait ended in ``sqlalchemy.exc.TimeoutError`` rather
-                than in a connection. This is the pool checkout timeout; it is raised
-                before any DBAPI call and so never reaches the engine's ``handle_error``.
+            timed_out: True if the wait ended in a timeout rather than in a connection:
+                the pool checkout timeout (``sqlalchemy.exc.TimeoutError``) or the
+                driver's connect timeout (a builtin ``TimeoutError`` while the pool opens
+                a connection). Neither reaches the engine's ``handle_error``.
         """
         ...
 
 
+@runtime_checkable
 class ErrorRecorder(Protocol):
-    """Capability protocol for recording database errors."""
+    """Capability protocol for recording database errors.
+
+    Called for every error the engine's ``handle_error`` sees -- errors on an established
+    connection, a statement timeout among them -- and, from the instrumented pool, for a
+    connection the pool could not open. ``runtime_checkable`` so the instrumented pool can
+    tell whether its recorder takes errors too.
+    """
 
     def record_error(self, error_type: str, is_timeout: bool = False) -> None:
         """Record a database connection or execution error.
 
         Args:
             error_type: The type of error that occurred (e.g., "OperationalError").
-            is_timeout: True if this error was specifically a connection checkout timeout.
+            is_timeout: Kept for compatibility; the library no longer sets it. Timeouts
+                acquiring a connection are reported through
+                :meth:`CheckoutWaitRecorder.record_checkout_wait`.
         """
         ...
 

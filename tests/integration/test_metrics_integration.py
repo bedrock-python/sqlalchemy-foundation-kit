@@ -280,3 +280,111 @@ async def test__postgres_metrics__pool_gauges__describe_the_pool_while_busy_and_
         assert _gauges(await _while_holding(manager, 12, prefix), prefix) == (10.0, 12.0, 2.0)
         # ...and after the burst the overflow connections are closed and nothing is in use
         assert _gauges(_exposed(prefix), prefix) == (10.0, 0.0, 0.0)
+
+
+# ============================================================================
+# What Counts as a Connection Timeout Tests
+# ============================================================================
+
+
+def _connection_series(prefix: str) -> tuple[float, float, float]:
+    """``(timeouts, errors over all labels, checkout waits)`` as scraped."""
+    exposed = _exposed(prefix)
+    errors = sum(v for k, v in exposed.items() if k.startswith(f"{prefix}_postgres_db_connection_errors_total{{"))
+    return (
+        exposed[f"{prefix}_postgres_db_connection_timeouts_total"],
+        errors,
+        exposed[f"{prefix}_postgres_db_connection_checkout_wait_seconds_count"],
+    )
+
+
+def _error_types(prefix: str) -> set[str]:
+    """The ``error_type`` labels ``connection_errors_total`` has seen."""
+    marker = f'{prefix}_postgres_db_connection_errors_total{{error_type="'
+    return {k[len(marker) :].split('"', 1)[0] for k in _exposed(prefix) if k.startswith(marker)}
+
+
+def _metrics_manager(url: str, prefix: str, connect_args: dict[str, object]) -> AsyncSessionManager[AsyncSession]:
+    from sqlalchemy_foundation_kit.contrib.metrics import PostgresMetrics
+
+    return AsyncSessionManager(
+        url,
+        poolclass="async_adapted_queue",
+        metrics=PostgresMetrics(prefix=prefix),
+        pool_settings=_PoolSettings(size=2, timeout=5.0),
+        connect_args=connect_args,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__postgres_metrics__statement_timeout__is_not_a_connection_timeout(
+    postgres_container: PostgresContainer,
+) -> None:
+    # Arrange: asyncpg's command_timeout fires on a running statement; the pool never waited
+    pytest.importorskip("prometheus_client")
+    prefix = f"it_{uuid.uuid4().hex[:8]}"
+    manager = _metrics_manager(asyncpg_url(postgres_container), prefix, {"command_timeout": 0.1})
+
+    # Act
+    async with manager:
+        with pytest.raises(TimeoutError):
+            async with manager.get_session() as session:
+                await session.execute(text("SELECT pg_sleep(1)"))
+
+    # Assert
+    timeouts, errors, waits = _connection_series(prefix)
+    assert timeouts == 0.0
+    assert _error_types(prefix) == {"TimeoutError"}
+    assert (errors, waits) == (1.0, 1.0)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__postgres_metrics__connect_timeout__counts_a_connection_timeout_and_its_wait() -> None:
+    # Arrange: a server that accepts the TCP connection and never answers the startup packet
+    pytest.importorskip("prometheus_client")
+
+    async def silent(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read()  # until the client gives up and closes
+        writer.close()
+
+    server = await asyncio.start_server(silent, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    prefix = f"it_{uuid.uuid4().hex[:8]}"
+    manager = _metrics_manager(f"postgresql+asyncpg://u:p@127.0.0.1:{port}/db", prefix, {"timeout": 0.3})
+
+    # Act
+    async with server, manager:
+        with pytest.raises(TimeoutError):
+            async with manager.get_session() as session:
+                await session.execute(text("SELECT 1"))
+
+    # Assert
+    timeouts, errors, waits = _connection_series(prefix)
+    assert (timeouts, errors, waits) == (1.0, 0.0, 1.0)
+    assert _exposed(prefix)[f"{prefix}_postgres_db_connection_checkout_wait_seconds_sum"] >= 0.3
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__postgres_metrics__connection_refused__counts_an_error_and_its_wait() -> None:
+    # Arrange: a port nothing listens on
+    pytest.importorskip("prometheus_client")
+    server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    server.close()
+    await server.wait_closed()
+    prefix = f"it_{uuid.uuid4().hex[:8]}"
+    manager = _metrics_manager(f"postgresql+asyncpg://u:p@127.0.0.1:{port}/db", prefix, {})
+
+    # Act
+    async with manager:
+        with pytest.raises(OSError):
+            async with manager.get_session() as session:
+                await session.execute(text("SELECT 1"))
+
+    # Assert
+    timeouts, errors, waits = _connection_series(prefix)
+    assert (timeouts, errors, waits) == (0.0, 1.0, 1.0)
+    assert _error_types(prefix) == {"ConnectionRefusedError"}

@@ -213,8 +213,12 @@ engine.
 
 `instrument_pool_class(pool_class, metrics)` lives beside them and is the other half of the
 metrics wiring: it returns a subclass of `pool_class` that times `Pool.connect()`, which is
-the only place the wait for a connection and the pool checkout timeout are visible — no
-pool event fires for either. The manager applies it to whatever `resolve_pool_class`
+the only place the wait for a connection, the pool checkout timeout and a failed connect
+are visible — no pool event fires for any of them, and with asyncpg none reaches
+`handle_error`. A builtin `TimeoutError` there (asyncpg's connect `timeout`) counts as a
+timeout like the pool's own; any other exception is recorded as an error when `metrics`
+implements `ErrorRecorder`, unless it is the driver's DBAPI error, which `handle_error`
+reports. The manager applies it to whatever `resolve_pool_class`
 returned whenever `metrics` implements `CheckoutWaitRecorder`, so callers get it without
 asking. On an engine you build yourself, pass the result as `poolclass=` to
 `create_async_engine`; `attach_metrics` logs a warning if you did not, rather than leaving
@@ -350,12 +354,12 @@ variables only through the parent `BaseSettings` that holds it. Under
 | `postgres_db_connection_checkout_wait_seconds` | histogram | how long a caller **waited** for a connection — the queue wait, plus the pre-ping and the connect handshake when the pool had to grow. Buckets run to 30 s, the default `pool_timeout` |
 | `postgres_db_connection_held_duration_seconds` | histogram | how long a caller **held** one, checkout to checkin — the query time seen from the pool |
 | `postgres_db_connection_checkout_duration_seconds` | histogram | **deprecated**, and never measured what its name says: it is the held duration under its old name. Kept for one more minor release, then dropped. Move dashboards to `…_held_duration_seconds`, or to `…_checkout_wait_seconds` if what you wanted was the wait |
-| `postgres_db_connection_timeouts_total` | counter | pool checkout timeouts, plus `TimeoutError`s seen by `handle_error` |
-| `postgres_db_connection_errors_total{error_type}` | counter | database errors by exception class name |
+| `postgres_db_connection_timeouts_total` | counter | timeouts acquiring a connection: pool checkout timeouts and connect timeouts. A statement timeout (asyncpg `command_timeout`) is not one; it is `connection_errors_total{error_type="TimeoutError"}` |
+| `postgres_db_connection_errors_total{error_type}` | counter | database errors by exception class name: everything `handle_error` sees, plus a connection the pool could not open |
 
 A `prefix` is prepended with an underscore and must match `^[a-zA-Z_][a-zA-Z0-9_]*$`.
 
-The wait histogram and the pool-timeout half of the counter come from the instrumented pool
+The wait histogram, the timeout counter and the connect errors come from the instrumented pool
 class, not from a listener, so they move only on an engine built by `AsyncSessionManager`
 or one whose pool went through `instrument_pool_class`.
 
@@ -468,6 +472,7 @@ is what to do on the version the row names.
 | `create_async_session_manager(config)` through PgBouncer in transaction mode (0.2.1 and earlier) | `jit="off"` was the default and `db_schema` went as `search_path`, both as startup parameters: a default PgBouncer refuses every connection with `ProtocolViolationError: unsupported startup parameter: jit`; with `ignore_startup_parameters=jit,search_path` it connects and silently drops both, so every query lands in `public` | `jit=None`, `db_schema=None`, and `ALTER ROLE … SET search_path` on the server |
 | `postgres_db_connection_timeouts_total` (0.3.0 and earlier) | stayed at zero through every pool checkout timeout. The counter was fed only from the engine's `handle_error` listener, and a pool `TimeoutError` is raised by `pool.connect()` before any DBAPI call, so it never reaches that listener — the one timeout a pool actually produces under load was the one the counter did not count | count `sqlalchemy.exc.TimeoutError` around your own session calls |
 | `postgres_db_pool_overflow`, `postgres_db_pool_checked_out` (0.4.0 and earlier) | sampled from the `checkout` / `checkin` events: `overflow` exported `QueuePool.overflow()`, which starts at `-pool_size` (`-9` with one connection open of 10), and since `checkin` fires before the connection is back, an idle pool kept reporting its last burst as checked out | read `pool.checkedout()` and `max(pool.overflow(), 0)` yourself |
+| `postgres_db_connection_timeouts_total` (0.4.0) | counted asyncpg statement timeouts — a slow query, on a healthy connection — and missed connect timeouts, which never reach `handle_error`. A database refusing connections moved no series at all | alert on `connection_errors_total{error_type="TimeoutError"}` for slow statements, and on the checkout wait for connections |
 | `postgres_db_connection_checkout_duration_seconds` (0.3.0 and earlier) | the only checkout histogram there was, and it measures the time between the `checkout` and `checkin` events — how long a connection was *held*, which is query duration seen from the pool. The time a caller waited for a connection, which is what the name suggests and what predicts a pool outage, was not exposed at all | none; the wait was not measurable from outside the pool |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,

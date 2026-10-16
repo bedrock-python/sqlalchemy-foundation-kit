@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
-from ..protocols import CheckoutWaitRecorder, PoolStatsFunctionRecorder
+from ..protocols import CheckoutWaitRecorder, ErrorRecorder, PoolStatsFunctionRecorder
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
@@ -75,7 +75,7 @@ def _pool_overflow(pool: Pool) -> int:
 
 
 def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> type:
-    """Build a pool class that times the wait for a connection and counts pool timeouts.
+    """Build a pool class that times the wait for a connection and counts timeouts acquiring one.
 
     SQLAlchemy has no event for "a checkout was requested", only for one that succeeded, so
     the time a caller spends queued for a connection cannot be observed from a listener.
@@ -85,6 +85,15 @@ def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> ty
     ``TimeoutError`` passes exactly once. Under an async pool the queue wait is an
     ``await_only`` inside that call, so the timer spans the whole suspension and measures
     the time the caller really waited.
+
+    Every checkout records its wait, however it ends. Two endings count as a timeout: the
+    pool's own ``sqlalchemy.exc.TimeoutError`` (the queue outlasted ``pool_timeout``) and
+    a builtin ``TimeoutError`` from the driver while the pool opens a new connection
+    (asyncpg's connect ``timeout``). Any other exception is a connection the pool could
+    not open, and is also recorded as an error when ``metrics`` implements
+    ``ErrorRecorder`` -- unless it is the driver's DBAPI error, which the engine's
+    ``handle_error`` reports itself. asyncpg's connect errors are not: none of them reaches
+    ``handle_error``, so this is the only place a database refusing connections shows up.
 
     ``_do_get`` is the wrong hook: ``QueuePool`` recurses into it when the non-blocking get
     comes back empty and the race for an overflow slot is lost, which is exactly the
@@ -106,6 +115,7 @@ def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> ty
         >>> poolclass = instrument_pool_class(resolve_pool_class("async_adapted_queue"), metrics)
         >>> engine = create_async_engine(url, poolclass=poolclass)
     """
+    error_recorder = metrics if isinstance(metrics, ErrorRecorder) else None
 
     class InstrumentedPool(pool_class):  # type: ignore[misc, valid-type]
         """Pool that reports how long each checkout waited."""
@@ -114,7 +124,7 @@ def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> ty
             started = time.perf_counter()
             try:
                 connection = super().connect()
-            except SATimeoutError:
+            except (SATimeoutError, TimeoutError):
                 _safe_metric_call(
                     lambda: metrics.record_checkout_wait(
                         duration=time.perf_counter() - started,
@@ -123,11 +133,28 @@ def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> ty
                     "Failed to record database checkout timeout",
                 )
                 raise
+            except Exception as exc:
+                _safe_metric_call(
+                    lambda: metrics.record_checkout_wait(duration=time.perf_counter() - started),
+                    "Failed to record database checkout wait",
+                )
+                if error_recorder is not None and not self._reported_by_handle_error(exc):
+                    error_type = type(exc).__name__
+                    _safe_metric_call(
+                        lambda: error_recorder.record_error(error_type=error_type),
+                        "Failed to record database connect error",
+                    )
+                raise
             _safe_metric_call(
                 lambda: metrics.record_checkout_wait(duration=time.perf_counter() - started),
                 "Failed to record database checkout wait",
             )
             return connection
+
+        def _reported_by_handle_error(self, exc: Exception) -> bool:
+            """Whether the engine turns ``exc`` into a ``handle_error`` event itself."""
+            dbapi = getattr(self._dialect, "loaded_dbapi", None)
+            return dbapi is not None and isinstance(exc, dbapi.Error)
 
     setattr(InstrumentedPool, _WAIT_RECORDER_ATTRIBUTE, metrics)
     InstrumentedPool.__name__ = f"Instrumented{pool_class.__name__}"
@@ -208,11 +235,11 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
 
     def on_error(exception_context: Any) -> None:
         """Handle database error event."""
-        exc = exception_context.original_exception
-        error_type = type(exc).__name__
-        is_timeout = isinstance(exc, (TimeoutError, SATimeoutError))
+        # Only errors on an established connection get here -- a statement timeout among
+        # them. Timeouts acquiring a connection are counted by the instrumented pool.
+        error_type = type(exception_context.original_exception).__name__
         _safe_metric_call(
-            lambda: metrics.record_error(error_type=error_type, is_timeout=is_timeout),
+            lambda: metrics.record_error(error_type=error_type),
             "Failed to record database error metric",
         )
 

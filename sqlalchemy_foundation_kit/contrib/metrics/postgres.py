@@ -67,7 +67,8 @@ class PostgresMetrics:
         - postgres_db_connection_held_duration_seconds: Time a connection was held by its caller.
         - postgres_db_connection_checkout_duration_seconds: Deprecated alias of the held duration,
           published unchanged for one more minor release.
-        - postgres_db_connection_timeouts_total: Number of connection checkout timeouts.
+        - postgres_db_connection_timeouts_total: Number of times acquiring a connection timed out:
+          pool checkout timeouts and connect timeouts. Statement timeouts are not counted here.
         - postgres_db_connection_errors_total: Number of connection errors.
 
     Labels:
@@ -122,7 +123,7 @@ class PostgresMetrics:
         )
         self.connection_timeouts_total = Counter(
             _make_metric_name("postgres_db_connection_timeouts_total", prefix),
-            "Number of connection checkout timeouts",
+            "Number of times acquiring a connection timed out: pool checkout timeouts and connect timeouts",
         )
         self.connection_errors_total = Counter(
             _make_metric_name("postgres_db_connection_errors_total", prefix),
@@ -170,10 +171,10 @@ class PostgresMetrics:
         duration: float,
         timed_out: bool = False,
     ) -> None:
-        """Record the wait for a connection from the pool, and count a pool timeout.
+        """Record the wait for a connection from the pool, and count a timeout acquiring it.
 
-        A pool checkout timeout is raised before any DBAPI call, so it never reaches the
-        engine's ``handle_error`` listener; this is the only place it is counted.
+        A pool checkout timeout and a connect timeout never reach the engine's
+        ``handle_error`` listener; this is the only place either is counted.
         """
         self.connection_checkout_wait.observe(duration)
         if timed_out:
@@ -184,7 +185,11 @@ class PostgresMetrics:
         error_type: str,
         is_timeout: bool = False,
     ) -> None:
-        """Record a database connection or execution error."""
+        """Record a database connection or execution error.
+
+        ``is_timeout`` is kept for compatibility and still counts a timeout when a custom
+        caller sets it; the library itself no longer does.
+        """
         self.connection_errors_total.labels(error_type=error_type).inc()
         if is_timeout:
             self.connection_timeouts_total.inc()
