@@ -268,9 +268,9 @@ session_manager = create_async_session_manager(
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `myapp_postgres_db_pool_size` | Gauge | Current pool size |
+| `myapp_postgres_db_pool_size` | Gauge | Configured `pool_size` (0 for a pool without a queue) |
 | `myapp_postgres_db_pool_checked_out` | Gauge | Connections currently in use |
-| `myapp_postgres_db_pool_overflow` | Gauge | Overflow connections created |
+| `myapp_postgres_db_pool_overflow` | Gauge | Open connections over `pool_size`, within `max_overflow` |
 | `myapp_postgres_db_connection_checkout_wait_seconds` | Histogram | Time a caller **waited** for a connection |
 | `myapp_postgres_db_connection_held_duration_seconds` | Histogram | Time a caller **held** a connection, checkout to checkin |
 | `myapp_postgres_db_connection_checkout_duration_seconds` | Histogram | Deprecated alias of the held duration — see below |
@@ -278,6 +278,12 @@ session_manager = create_async_session_manager(
 | `myapp_postgres_db_connection_timeouts_total` | Counter | Pool checkout timeouts, and `TimeoutError`s during execution |
 
 Without a `prefix` the names are `postgres_db_pool_size` and so on.
+
+The three gauges are read from the pool when Prometheus scrapes, not sampled from pool
+events, so an idle pool reports `checked_out` 0 instead of whatever its last burst left
+behind. A custom metrics object gets the same by implementing `PoolStatsFunctionRecorder`;
+one that only implements `record_pool_stats` is sampled on checkout and checkin, and lags
+one return behind.
 
 **Wait or held — they are not the same number.** The wait is the time spent inside
 `pool.connect()` before a connection is handed out: the queue wait, plus the pre-ping and
@@ -333,7 +339,8 @@ async def metrics_endpoint():
 **Grafana Dashboard Example:**
 
 ```promql
-# Pool utilization
+# Pool utilization against pool_size -- above 100 while overflow connections are in use;
+# the hard ceiling is pool_size + max_overflow
 (myapp_postgres_db_pool_checked_out / myapp_postgres_db_pool_size) * 100
 
 # P95 wait for a connection -- the one to alert on

@@ -156,7 +156,7 @@ from the submodule named beside it further down.
 | Base ORM | `Base`, `BaseTable`, `DatetimeColumnsMixin`, `DB_NAMING_CONVENTION`, `PydanticJSONB`, `GenericJSONDict`, `UnConstrainedEnum`, `load_orm_metadata` |
 | Engine utilities | `build_engine_kwargs`, `resolve_pool_class`, `register_pool_class`, `PoolRegistry`, `PoolClassStr`, `configure_orjson_serialization` |
 | Config protocols | `PostgresSettingsProtocol`, `ConnectionSettingsProtocol`, `PoolSettingsProtocol`, `QuerySettingsProtocol` |
-| Metrics protocols | `PostgresMetricsProtocol`, `PoolStatsRecorder`, `CheckoutRecorder`, `CheckoutWaitRecorder`, `ErrorRecorder` |
+| Metrics protocols | `PostgresMetricsProtocol`, `PoolStatsRecorder`, `PoolStatsFunctionRecorder`, `CheckoutRecorder`, `CheckoutWaitRecorder`, `ErrorRecorder` |
 | Version | `__version__` |
 
 ### `AsyncSessionManager`
@@ -202,7 +202,13 @@ are startup parameters, so read rule 16 before adding one.
 `sqlalchemy_foundation_kit.session.manager`, not re-exported — wire the pool listeners,
 respectively the per-transaction `search_path`, onto an engine you built yourself. The
 manager calls them when `metrics` / `search_path` is passed. A raising metrics callback is
-logged and swallowed, never propagated.
+logged and swallowed, never propagated. The pool gauges are read when the registry is
+collected if `metrics` implements `PoolStatsFunctionRecorder`
+(`set_pool_stats_functions(pool_size, pool_checked_out, pool_overflow)`, each a
+zero-argument callable over the engine's current pool), as `PostgresMetrics` does;
+otherwise `record_pool_stats` is called from the `checkout` / `checkin` events and lags one
+return behind, so an idle pool keeps its last burst. One `PostgresMetrics` reports one
+engine.
 
 `instrument_pool_class(pool_class, metrics)` lives beside them and is the other half of the
 metrics wiring: it returns a subclass of `pool_class` that times `Pool.connect()`, which is
@@ -336,9 +342,9 @@ variables only through the parent `BaseSettings` that holds it. Under
 
 | Series | Type | What it measures |
 |---|---|---|
-| `postgres_db_pool_size` | gauge | connections the pool holds |
+| `postgres_db_pool_size` | gauge | the configured `pool_size`; 0 for `null` / `static` |
 | `postgres_db_pool_checked_out` | gauge | connections currently in use |
-| `postgres_db_pool_overflow` | gauge | connections over `pool_size`, within `max_overflow` |
+| `postgres_db_pool_overflow` | gauge | open connections over `pool_size`, within `max_overflow`; never negative |
 | `postgres_db_connection_checkout_wait_seconds` | histogram | how long a caller **waited** for a connection — the queue wait, plus the pre-ping and the connect handshake when the pool had to grow. Buckets run to 30 s, the default `pool_timeout` |
 | `postgres_db_connection_held_duration_seconds` | histogram | how long a caller **held** one, checkout to checkin — the query time seen from the pool |
 | `postgres_db_connection_checkout_duration_seconds` | histogram | **deprecated**, and never measured what its name says: it is the held duration under its old name. Kept for one more minor release, then dropped. Move dashboards to `…_held_duration_seconds`, or to `…_checkout_wait_seconds` if what you wanted was the wait |

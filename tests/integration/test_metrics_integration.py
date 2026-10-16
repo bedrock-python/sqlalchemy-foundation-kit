@@ -203,3 +203,80 @@ def _exposed(prefix: str) -> dict[str, float]:
             name, value = line.rsplit(" ", 1)
             samples[name] = float(value)
     return samples
+
+
+# ============================================================================
+# Pool Gauges Tests
+# ============================================================================
+
+
+@dataclass
+class _GrowingPoolSettings:
+    """Ten connections that can grow by twenty: the defaults, with a pool to watch."""
+
+    kind: str = "async_adapted_queue"
+    size: int = 10
+    max_overflow: int = 20
+    pre_ping: bool = False
+    recycle: int = -1
+    timeout: float = 5.0
+
+
+async def _while_holding(manager: AsyncSessionManager[AsyncSession], n: int, prefix: str) -> dict[str, float]:
+    """Check out ``n`` connections at once, read the registry while all are held, release them."""
+    all_checked_out, release = asyncio.Event(), asyncio.Event()
+    ready = 0
+
+    async def one() -> None:
+        nonlocal ready
+        async with manager.get_session() as session:
+            await session.execute(text("SELECT 1"))
+            ready += 1
+            if ready == n:
+                all_checked_out.set()
+            await release.wait()
+
+    tasks = [asyncio.create_task(one()) for _ in range(n)]
+    await all_checked_out.wait()
+    exposed = _exposed(prefix)
+    release.set()
+    await asyncio.gather(*tasks)
+    return exposed
+
+
+def _gauges(exposed: dict[str, float], prefix: str) -> tuple[float, float, float]:
+    """``(pool_size, pool_checked_out, pool_overflow)`` as scraped."""
+    return (
+        exposed[f"{prefix}_postgres_db_pool_size"],
+        exposed[f"{prefix}_postgres_db_pool_checked_out"],
+        exposed[f"{prefix}_postgres_db_pool_overflow"],
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__postgres_metrics__pool_gauges__describe_the_pool_while_busy_and_once_idle(
+    postgres_container: PostgresContainer,
+) -> None:
+    # Arrange: the reporter's run -- size=10, max_overflow=20, one request, then a burst of 12
+    pytest.importorskip("prometheus_client")
+    from sqlalchemy_foundation_kit.contrib.metrics import PostgresMetrics
+
+    prefix = f"it_{uuid.uuid4().hex[:8]}"
+    manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager(
+        asyncpg_url(postgres_container),
+        poolclass="async_adapted_queue",
+        metrics=PostgresMetrics(prefix=prefix),
+        pool_settings=_GrowingPoolSettings(),
+    )
+
+    async with manager:
+        # Act & Assert: one connection in use is not "-9 overflow"
+        assert _gauges(await _while_holding(manager, 1, prefix), prefix) == (10.0, 1.0, 0.0)
+        # ...and once it is back, nothing is in use
+        assert _gauges(_exposed(prefix), prefix) == (10.0, 0.0, 0.0)
+
+        # Act & Assert: twelve at once is two past pool_size
+        assert _gauges(await _while_holding(manager, 12, prefix), prefix) == (10.0, 12.0, 2.0)
+        # ...and after the burst the overflow connections are closed and nothing is in use
+        assert _gauges(_exposed(prefix), prefix) == (10.0, 0.0, 0.0)

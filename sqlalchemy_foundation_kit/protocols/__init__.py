@@ -10,6 +10,7 @@ from .metrics import (
     CheckoutRecorder,
     CheckoutWaitRecorder,
     ErrorRecorder,
+    PoolStatsFunctionRecorder,
     PoolStatsRecorder,
     PostgresMetricsProtocol,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "CheckoutRecorder",
     "CheckoutWaitRecorder",
     "ErrorRecorder",
+    "PoolStatsFunctionRecorder",
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",
 ]

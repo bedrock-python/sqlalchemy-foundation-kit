@@ -33,6 +33,7 @@ from .protocols import (
     CheckoutRecorder,
     CheckoutWaitRecorder,
     ErrorRecorder,
+    PoolStatsFunctionRecorder,
     PoolStatsRecorder,
     PostgresMetricsProtocol,
 )
@@ -92,6 +93,7 @@ __all__ = [  # noqa: RUF022
     "CheckoutRecorder",
     "CheckoutWaitRecorder",
     "ErrorRecorder",
+    "PoolStatsFunctionRecorder",
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",
     # Session Management

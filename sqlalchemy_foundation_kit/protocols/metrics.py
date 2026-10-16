@@ -7,6 +7,7 @@ the narrow protocols selectively (e.g., only record errors), and
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 
@@ -21,10 +22,51 @@ class PoolStatsRecorder(Protocol):
     ) -> None:
         """Record database connection pool statistics.
 
+        Called from the pool's ``checkout`` and ``checkin`` events, so each call describes
+        the pool as that event saw it -- and ``checkin`` fires before the connection is
+        back, so the last call of a burst still counts it as checked out. A recorder that
+        also implements :class:`PoolStatsFunctionRecorder` reads the pool when it is
+        collected instead, and this method is then not called.
+
         Args:
-            pool_size: Current total number of connections in the pool.
+            pool_size: The configured ``pool_size`` of a queue pool, 0 for any other pool.
             pool_checked_out: Number of connections currently in use.
-            pool_overflow: Number of connections over the configured pool_size.
+            pool_overflow: Number of open connections over ``pool_size``, within
+                ``max_overflow``; never negative.
+        """
+        ...
+
+
+@runtime_checkable
+class PoolStatsFunctionRecorder(Protocol):
+    """Capability protocol for reading pool statistics when the metrics are collected.
+
+    A gauge sampled from pool events goes stale: the ``checkin`` event fires before the
+    connection is returned, and nothing fires once the pool is idle, so an idle pool keeps
+    reporting the last burst. A recorder that implements this protocol is handed
+    functions that read the pool on demand -- ``prometheus_client``'s
+    ``Gauge.set_function`` -- and :class:`PoolStatsRecorder` is then not used for it.
+
+    Not part of :class:`PostgresMetricsProtocol`, so implementations written without it
+    stay valid; the session manager tests for it with ``isinstance``.
+    """
+
+    def set_pool_stats_functions(
+        self,
+        pool_size: Callable[[], float],
+        pool_checked_out: Callable[[], float],
+        pool_overflow: Callable[[], float],
+    ) -> None:
+        """Read the pool statistics from these functions whenever they are collected.
+
+        Each function reads the engine's current pool, so the pool that ``dispose()``
+        creates is the one reported. Values mean the same as in
+        :meth:`PoolStatsRecorder.record_pool_stats`.
+
+        Args:
+            pool_size: Returns the configured ``pool_size``.
+            pool_checked_out: Returns the number of connections currently in use.
+            pool_overflow: Returns the number of open connections over ``pool_size``.
         """
         ...
 
@@ -104,6 +146,7 @@ __all__ = [
     "CheckoutRecorder",
     "CheckoutWaitRecorder",
     "ErrorRecorder",
+    "PoolStatsFunctionRecorder",
     "PoolStatsRecorder",
     "PostgresMetricsProtocol",
 ]
