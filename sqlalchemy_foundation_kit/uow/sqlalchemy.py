@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Generic
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .._typing import T
@@ -105,6 +106,23 @@ async def apply_isolation_level(
     normalized = normalize_isolation_level(isolation_level)
     if normalized is not None:
         await session.connection(execution_options={"isolation_level": normalized})
+
+
+async def _begin_read_only(session: AsyncSession) -> None:
+    """Make the session's transaction ``READ ONLY``.
+
+    The ``postgresql_readonly`` execution option is applied when a connection is checked
+    out, so on a session that has not checked one out yet it goes with that checkout:
+    asyncpg then opens the transaction ``READ ONLY`` with no extra round trip, and the
+    dialect resets the flag when the connection returns to the pool. When ``open_session()``
+    has already started the transaction -- an isolation level was applied, or an override
+    ran a statement -- ``SET TRANSACTION READ ONLY`` marks it instead; PostgreSQL accepts
+    that at any point in a transaction.
+    """
+    if session.in_transaction():
+        await session.execute(text("SET TRANSACTION READ ONLY"))
+    else:
+        await session.connection(execution_options={"postgresql_readonly": True})
 
 
 @asynccontextmanager
@@ -227,7 +245,7 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
 
     Methods:
         transaction(): For write operations with automatic commit/rollback.
-        query(): For read-only operations without transaction management.
+        query(): For reads, in one READ ONLY transaction that is rolled back on exit.
     """
 
     def __init__(
@@ -432,11 +450,20 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
         self,
         isolation_level: IsolationLevel | str | None = None,
     ) -> AsyncIterator[T]:
-        """Create a read-only query context without transaction management.
+        """Create a read-only query context: one ``READ ONLY`` transaction, never committed.
 
-        This method is designed for read-only operations and does not start a transaction
-        or perform any commit/rollback. It's semantically clearer than managed_session()
-        for read operations.
+        The block runs in a single transaction from its first statement until it exits,
+        when the transaction is rolled back. PostgreSQL enforces ``READ ONLY``: an
+        ``INSERT``, ``UPDATE``, ``DELETE`` or DDL statement, and functions such as
+        ``nextval()``, fail with SQLSTATE 25006. Reads, ``SET LOCAL`` / ``set_config`` and
+        advisory locks work.
+
+        It is still a transaction, with what that costs: every lock it takes -- the
+        ``AccessShareLock`` on each table read, an advisory xact lock -- is held until the
+        block exits, ``now()`` is fixed at the first statement, a slow ``await`` inside the
+        block leaves the connection ``idle in transaction``, and behind a transaction-mode
+        pooler the block holds one server connection from its first statement to exit.
+        Keep it short.
 
         Args:
             isolation_level: Optional transaction isolation level.
@@ -451,13 +478,14 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
                 async with uow.query() as qx:
                     users = await qx.users.list_all()
                     user = await qx.users.get_by_id(user_id)
-                # No commit/rollback - just closes session
+                # Rolled back on exit -- there is nothing to commit
 
         Note:
-            While this method is intended for read-only operations, SQLAlchemy does not enforce
-            this at the session level. It's up to the caller to ensure only read operations are performed.
+            Only the block's first transaction is read-only. Calling
+            ``session.commit()`` inside ``query()`` ends it, and the session starts an
+            ordinary one on its next statement. Write in :meth:`transaction` instead.
         """
         async with self.open_session(isolation_level) as session:
-            # No transaction begin/commit - just yield the session
+            await _begin_read_only(session)
             uow = self._transaction_factory(session)
             yield uow

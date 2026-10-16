@@ -113,25 +113,32 @@ async with uow.transaction(isolation_level="READ COMMITTED") as tx:
 
 The level is set on the connection this block checks out, so it applies to this
 transaction and leaves the engine alone. It has to be set before the transaction starts,
-which means the block's transaction opens as the context manager is entered — including
-in `query()`, which otherwise waits for the first statement. To set a level for every
+which means the block's transaction opens as the context manager is entered. To set a level for every
 session instead, pass `isolation_level=` to `AsyncSessionManager` or set
 `QuerySettings.isolation_level`.
 
 ### Read-Only Queries
 
-For read-only operations without transaction overhead:
+`query()` runs the block in one `READ ONLY` transaction and rolls it back on exit:
 
 ```python
-# Query context - no transaction management
 async with uow.query() as qx:
     users = await qx.users.list_all(limit=100)
-    # No commit/rollback, just queries
+    # Rolled back on exit; nothing to commit
 
 # With isolation level
 async with uow.query(isolation_level=IsolationLevel.REPEATABLE_READ) as qx:
     users = await qx.users.list_all()
 ```
+
+PostgreSQL enforces the `READ ONLY`: an `INSERT`, `UPDATE`, `DELETE`, DDL statement or
+`nextval()` inside the block fails with SQLSTATE 25006. Reads, `SET LOCAL` /
+`set_config` and advisory locks work. Being a transaction, the block holds every lock it
+takes — the `AccessShareLock` on each table it read, which makes an `ALTER TABLE` on that
+table wait — until it exits, fixes `now()` at its first statement, and leaves the
+connection `idle in transaction` across any `await` that is not a query. Behind a
+transaction-mode PgBouncer it holds one server connection from its first statement to its
+exit. Keep the block to the reads.
 
 ### Manual Transaction Control
 

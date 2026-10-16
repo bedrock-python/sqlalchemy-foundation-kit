@@ -56,7 +56,7 @@ class AsyncUnitOfWork(Protocol, Generic[T_co]):
     Provides three modes of operation:
         - ``transaction()``: For write operations with automatic commit/rollback.
         - ``managed_session()``: For write operations with **manual** commit/rollback control.
-        - ``query()``: For read-only operations without transaction management.
+        - ``query()``: For reads, in one ``READ ONLY`` transaction that is rolled back on exit.
     """
 
     def transaction(
@@ -95,4 +95,4 @@ class AsyncUnitOfWork(Protocol, Generic[T_co]):
         """
 
     def query(self, isolation_level: str | None = None) -> AbstractAsyncContextManager[T_co]:
-        """Create a read-only query context without transaction management."""
+        """Create a read-only query context: one ``READ ONLY`` transaction, rolled back on exit."""
