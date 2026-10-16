@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -63,6 +64,15 @@ def test__safe_metric_call__exception__does_not_propagate() -> None:
 # ============================================================================
 
 
+def _event_sampled_metrics() -> Mock:
+    """Metrics without ``set_pool_stats_functions``, so the pool events sample the gauges.
+
+    A bare ``Mock()`` will not do: before Python 3.12 a runtime protocol check is a
+    ``hasattr`` per member, which a ``Mock`` passes for any name.
+    """
+    return Mock(spec=["record_pool_stats", "record_checkout", "record_error"])
+
+
 def test__attach_metrics__registers_checkout_listener() -> None:
     # Arrange
     mock_engine = Mock()
@@ -118,7 +128,7 @@ def test__attach_metrics__checkout_records_pool_stats() -> None:
     mock_engine = Mock()
     mock_engine.pool = mock_pool
 
-    mock_metrics = Mock()
+    mock_metrics = _event_sampled_metrics()
 
     # Act
     with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
@@ -142,6 +152,125 @@ def test__attach_metrics__checkout_records_pool_stats() -> None:
     assert call_args["pool_size"] == 10
     assert call_args["pool_checked_out"] == 5
     assert call_args["pool_overflow"] == 2
+
+
+def test__attach_metrics__checkout_on_a_pool_below_its_size__records_no_negative_overflow() -> None:
+    # Arrange: QueuePool.overflow() is "open connections minus pool_size" -- -9 with one open
+    mock_engine = Mock()
+    mock_engine.pool.size.return_value = 10
+    mock_engine.pool.checkedout.return_value = 1
+    mock_engine.pool.overflow.return_value = -9
+    mock_metrics = _event_sampled_metrics()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
+        attach_metrics(mock_engine, mock_metrics)
+        checkout_callback = next(c[0][2] for c in mock_event.listen.call_args_list if c[0][1] == "checkout")
+        checkout_callback(None, Mock(info={}), None)
+
+    # Assert
+    assert mock_metrics.record_pool_stats.call_args[1]["pool_overflow"] == 0
+
+
+class _FunctionRecorder:
+    """Reads the pool gauges on demand, the way ``Gauge.set_function`` does."""
+
+    def __init__(self) -> None:
+        self.functions: dict[str, Callable[[], float]] = {}
+        self.event_samples = 0
+        self.held: list[float] = []
+
+    def set_pool_stats_functions(
+        self,
+        pool_size: Callable[[], float],
+        pool_checked_out: Callable[[], float],
+        pool_overflow: Callable[[], float],
+    ) -> None:
+        self.functions = {"size": pool_size, "checked_out": pool_checked_out, "overflow": pool_overflow}
+
+    def record_pool_stats(self, pool_size: int, pool_checked_out: int, pool_overflow: int) -> None:
+        self.event_samples += 1
+
+    def record_checkout(self, duration: float) -> None:
+        self.held.append(duration)
+
+    def record_error(self, error_type: str, is_timeout: bool = False) -> None: ...
+
+    def read(self) -> dict[str, float]:
+        return {name: function() for name, function in self.functions.items()}
+
+
+def _queue_pool(size: int, checked_out: int, overflow: int) -> Mock:
+    pool = Mock()
+    pool.size.return_value = size
+    pool.checkedout.return_value = checked_out
+    pool.overflow.return_value = overflow
+    return pool
+
+
+def test__attach_metrics__function_recorder__reads_the_pool_when_collected() -> None:
+    # Arrange
+    mock_engine = Mock()
+    mock_engine.pool = _queue_pool(size=10, checked_out=1, overflow=-9)
+    recorder = _FunctionRecorder()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        attach_metrics(mock_engine, recorder)  # type: ignore[arg-type]
+    busy = recorder.read()
+    mock_engine.pool.checkedout.return_value = 0  # the connection came back; no event follows
+    idle = recorder.read()
+
+    # Assert
+    assert busy == {"size": 10, "checked_out": 1, "overflow": 0}
+    assert idle == {"size": 10, "checked_out": 0, "overflow": 0}
+
+
+def test__attach_metrics__function_recorder__follows_the_pool_dispose_creates() -> None:
+    # Arrange
+    mock_engine = Mock()
+    mock_engine.pool = _queue_pool(size=10, checked_out=3, overflow=-7)
+    recorder = _FunctionRecorder()
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        attach_metrics(mock_engine, recorder)  # type: ignore[arg-type]
+
+    # Act: engine.dispose() swaps in a fresh pool
+    mock_engine.pool = _queue_pool(size=10, checked_out=0, overflow=-10)
+
+    # Assert
+    assert recorder.read() == {"size": 10, "checked_out": 0, "overflow": 0}
+
+
+def test__attach_metrics__function_recorder__pool_events_do_not_sample_the_gauges() -> None:
+    # Arrange
+    mock_engine = Mock()
+    recorder = _FunctionRecorder()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
+        attach_metrics(mock_engine, recorder)  # type: ignore[arg-type]
+        callbacks = {c[0][1]: c[0][2] for c in mock_event.listen.call_args_list}
+        record = Mock(info={})
+        callbacks["checkout"](None, record, None)
+        callbacks["checkin"](None, record)
+
+    # Assert: the held duration still comes from the events
+    assert recorder.event_samples == 0
+    assert len(recorder.held) == 1
+
+
+def test__attach_metrics__function_recorder__pool_without_queue__reads_zero() -> None:
+    # Arrange
+    mock_engine = Mock()
+    mock_engine.pool = Mock(spec=[])  # NullPool / StaticPool have no size, checkedout, overflow
+    recorder = _FunctionRecorder()
+
+    # Act
+    with patch("sqlalchemy_foundation_kit.session.manager.event"):
+        attach_metrics(mock_engine, recorder)  # type: ignore[arg-type]
+
+    # Assert
+    assert recorder.read() == {"size": 0, "checked_out": 0, "overflow": 0}
 
 
 def test__attach_metrics__checkout_stores_start_time() -> None:
@@ -281,7 +410,7 @@ def test__attach_metrics__pool_without_size__uses_zero() -> None:
     mock_pool = Mock(spec=[])  # No size method
     mock_engine = Mock()
     mock_engine.pool = mock_pool
-    mock_metrics = Mock()
+    mock_metrics = _event_sampled_metrics()
 
     # Act
     with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:

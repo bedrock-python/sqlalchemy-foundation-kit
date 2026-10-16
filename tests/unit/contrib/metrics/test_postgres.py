@@ -31,6 +31,11 @@ def _histogram(histogram: object, suffix: str) -> float:
     raise AssertionError(f"no {suffix} sample on the histogram")
 
 
+def _collected(gauge: object) -> float:
+    """The value a scrape of this gauge would expose right now."""
+    return float(next(iter(gauge.collect())).samples[0].value)  # type: ignore[attr-defined]
+
+
 # ============================================================================
 # _make_metric_name Tests
 # ============================================================================
@@ -185,6 +190,36 @@ def test__postgres_metrics__record_pool_stats__sets_gauge_values() -> None:
     assert metrics.pool_size._value.get() == 10.0  # type: ignore[attr-defined]
     assert metrics.pool_checked_out._value.get() == 5.0  # type: ignore[attr-defined]
     assert metrics.pool_overflow._value.get() == 2.0  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test__postgres_metrics__set_pool_stats_functions__gauges_read_them_on_collect() -> None:
+    # Arrange
+    metrics = PostgresMetrics(prefix=_unique_prefix())
+    checked_out = [3]
+
+    # Act
+    metrics.set_pool_stats_functions(
+        pool_size=lambda: 10,
+        pool_checked_out=lambda: checked_out[0],
+        pool_overflow=lambda: 0,
+    )
+    busy = _collected(metrics.pool_checked_out)
+    checked_out[0] = 0
+    idle = _collected(metrics.pool_checked_out)
+
+    # Assert
+    assert _collected(metrics.pool_size) == 10.0
+    assert (busy, idle) == (3.0, 0.0)
+
+
+@pytest.mark.unit
+def test__postgres_metrics__satisfies_the_pool_stats_function_protocol() -> None:
+    # Arrange
+    from sqlalchemy_foundation_kit.protocols import PoolStatsFunctionRecorder
+
+    # Act & Assert: attach_metrics picks the collect-time path by this check
+    assert isinstance(PostgresMetrics(prefix=_unique_prefix()), PoolStatsFunctionRecorder)
 
 
 @pytest.mark.unit

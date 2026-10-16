@@ -21,10 +21,11 @@ from sqlalchemy.ext.asyncio import (
 
 from .._typing import SessionT
 from ..base import build_engine_kwargs, resolve_pool_class
-from ..protocols import CheckoutWaitRecorder
+from ..protocols import CheckoutWaitRecorder, PoolStatsFunctionRecorder
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
+    from sqlalchemy.pool import Pool
 
     from ..config import PoolSettingsProtocol
     from ..protocols import PostgresMetricsProtocol
@@ -52,6 +53,25 @@ def _safe_metric_call(func: Callable[[], None], error_msg: str) -> None:
         func()
     except Exception:
         logger.exception(error_msg)
+
+
+def _pool_size(pool: Pool) -> int:
+    """The configured ``pool_size`` of a queue pool, 0 for a pool without one."""
+    return int(pool.size()) if hasattr(pool, "size") else 0
+
+
+def _pool_checked_out(pool: Pool) -> int:
+    """Connections currently in use."""
+    return int(pool.checkedout()) if hasattr(pool, "checkedout") else 0
+
+
+def _pool_overflow(pool: Pool) -> int:
+    """Open connections over ``pool_size``.
+
+    ``QueuePool.overflow()`` starts at ``-pool_size`` and counts every connection the pool
+    opens, so it is negative until the pool has grown past ``pool_size``.
+    """
+    return max(int(pool.overflow()), 0) if hasattr(pool, "overflow") else 0
 
 
 def instrument_pool_class(pool_class: type, metrics: CheckoutWaitRecorder) -> type:
@@ -121,6 +141,12 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
     Registers event handlers for connection checkout, checkin, and error events
     to collect pool statistics and connection metrics.
 
+    The pool gauges come from the pool itself: a ``metrics`` that implements
+    ``PoolStatsFunctionRecorder`` is handed functions that read ``engine.pool`` whenever
+    the metrics are collected, so an idle pool reports what it holds rather than its last
+    burst, and a pool recreated by ``dispose()`` is the one read. One that only implements
+    ``record_pool_stats`` is sampled from the ``checkout`` and ``checkin`` events instead.
+
     The checkout wait and the pool checkout timeout are **not** listeners — no pool event
     fires for either — and come from the pool class :func:`instrument_pool_class` builds.
     If ``metrics`` records the wait but the engine's pool was built without it, that is
@@ -142,12 +168,24 @@ def attach_metrics(engine: AsyncEngine, metrics: PostgresMetricsProtocol) -> Non
             type(pool).__name__,
         )
 
+    reads_pool_on_collect = False
+    if isinstance(metrics, PoolStatsFunctionRecorder):
+        reads_pool_on_collect = True
+        # engine.pool is looked up on every read: dispose() replaces the pool object.
+        metrics.set_pool_stats_functions(
+            pool_size=lambda: _pool_size(engine.pool),
+            pool_checked_out=lambda: _pool_checked_out(engine.pool),
+            pool_overflow=lambda: _pool_overflow(engine.pool),
+        )
+
     def record_pool_stats() -> None:
+        if reads_pool_on_collect:
+            return
         _safe_metric_call(
             lambda: metrics.record_pool_stats(
-                pool_size=pool.size() if hasattr(pool, "size") else 0,
-                pool_checked_out=(pool.checkedout() if hasattr(pool, "checkedout") else 0),
-                pool_overflow=pool.overflow() if hasattr(pool, "overflow") else 0,
+                pool_size=_pool_size(pool),
+                pool_checked_out=_pool_checked_out(pool),
+                pool_overflow=_pool_overflow(pool),
             ),
             "Failed to record database pool stats",
         )

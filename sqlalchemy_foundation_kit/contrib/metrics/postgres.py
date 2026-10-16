@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 try:
     from prometheus_client import Counter, Gauge, Histogram
@@ -59,9 +60,9 @@ class PostgresMetrics:
     """Postgres connection pool metrics.
 
     Metrics:
-        - postgres_db_pool_size: Current database connection pool size.
+        - postgres_db_pool_size: Configured pool_size of the connection pool.
         - postgres_db_pool_checked_out: Number of connections currently checked out.
-        - postgres_db_pool_overflow: Number of connections over pool_size (within max_overflow).
+        - postgres_db_pool_overflow: Number of open connections over pool_size (within max_overflow).
         - postgres_db_connection_checkout_wait_seconds: Time a caller waited for a connection.
         - postgres_db_connection_held_duration_seconds: Time a connection was held by its caller.
         - postgres_db_connection_checkout_duration_seconds: Deprecated alias of the held duration,
@@ -71,6 +72,10 @@ class PostgresMetrics:
 
     Labels:
         - error_type: Type of connection error (for errors_total).
+
+    The three pool gauges are read from the pool when the registry is collected, not
+    sampled from pool events, so an idle pool reports what it holds. One instance reports
+    one engine: attached to a second engine, the gauges follow the second.
 
     The wait histogram and the timeout counter are fed by the instrumented pool class the
     session manager builds, so they only move on an engine created by
@@ -90,7 +95,7 @@ class PostgresMetrics:
 
         self.pool_size = Gauge(
             _make_metric_name("postgres_db_pool_size", prefix),
-            "Current database connection pool size",
+            "Configured pool_size of the database connection pool",
         )
         self.pool_checked_out = Gauge(
             _make_metric_name("postgres_db_pool_checked_out", prefix),
@@ -98,7 +103,7 @@ class PostgresMetrics:
         )
         self.pool_overflow = Gauge(
             _make_metric_name("postgres_db_pool_overflow", prefix),
-            "Number of connections over pool_size (within max_overflow)",
+            "Number of open connections over pool_size (within max_overflow)",
         )
         self.connection_checkout_wait = Histogram(
             _make_metric_name("postgres_db_connection_checkout_wait_seconds", prefix),
@@ -135,6 +140,17 @@ class PostgresMetrics:
         self.pool_size.set(float(pool_size))
         self.pool_checked_out.set(float(pool_checked_out))
         self.pool_overflow.set(float(pool_overflow))
+
+    def set_pool_stats_functions(
+        self,
+        pool_size: Callable[[], float],
+        pool_checked_out: Callable[[], float],
+        pool_overflow: Callable[[], float],
+    ) -> None:
+        """Read the pool gauges from these functions whenever the registry is collected."""
+        self.pool_size.set_function(pool_size)
+        self.pool_checked_out.set_function(pool_checked_out)
+        self.pool_overflow.set_function(pool_overflow)
 
     def record_checkout(
         self,
