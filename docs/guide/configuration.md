@@ -174,7 +174,7 @@ ConnectionSettings(
 | `kind` | `PoolClassStr` | `"async_adapted_queue"` | Pool implementation (`async_adapted_queue`, `static`, `null`) |
 | `size` | `int` | `10` | Number of connections the pool keeps open (minimum 1); queue pools only |
 | `max_overflow` | `int` | `20` | Additional connections when pool is exhausted (0 or more); queue pools only |
-| `pre_ping` | `bool` | `True` | Check connection health before use (recommended) |
+| `pre_ping` | `bool` | `True` | Check connection health before use (recommended on a direct connection; behind PgBouncer see [PgBouncer](#pgbouncer)) |
 | `recycle` | `int` | `3600` | Recycle connections after N seconds (-1 = never) |
 | `timeout` | `float` | `30.0` | Seconds to wait for connection before raising error; queue pools only |
 
@@ -434,12 +434,13 @@ run twice, so every cache fills. The scripts are on
 |---|---|---|
 | plain SQLAlchemy + asyncpg, driver defaults | PostgreSQL directly | 800 of 800 ok |
 | plain SQLAlchemy + asyncpg, driver defaults | PgBouncer, defaults (`max_prepared_statements=200`) | 800 of 800 ok |
-| plain SQLAlchemy + asyncpg, driver defaults | PgBouncer, `max_prepared_statements=0` (the default before 1.22) | 485 of 800 ok; 315 × `prepared statement "__asyncpg_stmt_…" does not exist` |
+| plain SQLAlchemy + asyncpg, driver defaults | PgBouncer, `max_prepared_statements=0` (the default before 1.24) | 485 of 800 ok; 315 × `prepared statement "__asyncpg_stmt_…" does not exist` |
 | `create_async_session_manager(config)`, 0.2.1 | PgBouncer, defaults | 0 of 800: every connection refused with `unsupported startup parameter: jit` |
 | `create_async_session_manager(config)`, 0.2.1 | PgBouncer, `ignore_startup_parameters=jit,search_path` | 800 of 800 ok — and `SHOW jit` is `on`, `SHOW search_path` is `"$user", public`: both parameters silently dropped |
 | `create_async_session_manager(config)`, current | PgBouncer, defaults | 800 of 800 ok; `SHOW search_path` is the configured `db_schema` |
 
-Three things follow, and the library is built around each.
+Four things follow. The library is built around the first three; the fourth is a setting
+you choose.
 
 **Startup parameters do not pass through.** asyncpg's `server_settings` are parameters of
 the PostgreSQL startup packet. PgBouncer forwards only the ones it tracks —
@@ -462,22 +463,50 @@ the start of every transaction, and why the alternatives are `ALTER ROLE … SET
 `ALTER DATABASE … SET`, `track_extra_parameters`, or schema-qualified metadata — never a
 `SET` in a `connect` listener.
 
-**Prepared statements are fine on a current PgBouncer, and still not on an old one.**
-Since 1.22 PgBouncer tracks protocol-level prepared statements itself
-(`max_prepared_statements=200` by default), so the driver's default statement cache runs
-clean. Before 1.22, or with `max_prepared_statements=0`, a cached statement name is unknown
-to the server connection the next transaction lands on and the classic failure comes back.
-`QuerySettings` defaults both caches to 0 and `create_async_session_manager` uses
-`AsyncCConnection`, whose statement names are unique per connection, so the library is
-safe on either; on 1.22+ you may raise the caches to win the round-trip back.
+**With the statement caches at 0, any PgBouncer works.** With `statement_cache_size=0`
+(the default) asyncpg sends unnamed statements and parses them again on every execution,
+so no statement depends on what a server connection remembers. `statement_cache_size > 0`
+names statements and reuses them in later transactions, which may land on a different
+server connection. That needs PgBouncer to track prepared statements itself: 1.21 or later
+with `max_prepared_statements > 0`. The setting was added in 1.21 at 0 (off) and has
+defaulted to 200 since 1.24 — measured, a stock 1.21.0, 1.22.1 and 1.23.1 report
+`max_prepared_statements=0`, a stock 1.24.1 and 1.25.2 report 200. Without tracking, every
+cache combination with `statement_cache_size > 0` fails with
+`prepared statement "__asyncpg_stmt_…" does not exist`. The connection class plays no part:
+`AsyncCConnection` and a plain `asyncpg.Connection` passed and failed in exactly the same
+runs ([issue #60](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/60)).
+On a tracking PgBouncer you may raise the caches to win the parse round-trip back.
+
+**Pre-ping costs a PgBouncer transaction, and moves PgBouncer's queue out of
+`pool_timeout`.** `pre_ping=True` (the default) pings every connection the pool reuses,
+and SQLAlchemy runs that ping on asyncpg as its own `BEGIN` / `;` / `ROLLBACK`. Through a
+transaction-mode pooler that is a separate server assignment before the request's own
+transaction: ten requests cost twenty PgBouncer transactions (measured,
+[issue #58](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/58)). And
+when all of PgBouncer's server connections are busy, the request waits in PgBouncer's
+queue inside the ping, that is inside `pool.connect()`: the wait is recorded as
+`connection_checkout_wait_seconds`, `pool_timeout` does not bound it (a pool with
+`timeout=0.2` recorded a 1.0 s checkout wait and no timeout), and only PgBouncer's
+`query_wait_timeout` (120 s by default) ends it. Behind a transaction-mode PgBouncer,
+`pre_ping=False` is usually the better trade. What the ping buys back is a connection
+closed while idle: PgBouncer closes a client connection after `client_idle_timeout`, and
+without the ping the next request on it fails (`InterfaceError: connection is closed`)
+before SQLAlchemy discards it. Set `recycle` below `client_idle_timeout`, and below any
+load balancer's idle timeout, and the pool retires the connection first — measured with
+`client_idle_timeout=2`: `pre_ping=False, recycle=3600` failed the request after 3 s idle,
+`pre_ping=False, recycle=1` did not.
 
 ```python
-# Behind PgBouncer in transaction mode this is all it takes
+# Behind PgBouncer in transaction mode
 config = BasePostgresConfig(
     connection=ConnectionSettings(host="pgbouncer", port=6432, ...),
     application_name="my-service",
     db_schema="app",   # SET LOCAL at the start of every transaction: arrives
     # jit stays None   # nothing sent: the connection is accepted
+    pool=PoolSettings(
+        pre_ping=False,  # no extra PgBouncer transaction per checkout
+        recycle=300,     # below PgBouncer's client_idle_timeout and any LB idle timeout
+    ),
 )
 manager = create_async_session_manager(config)
 ```
@@ -547,7 +576,8 @@ PoolSettings(size=2, max_overflow=0)
 
 The defaults already do the right thing — statement caches at 0, `jit` unset, `db_schema`
 applied per transaction. Do not put `jit`, `search_path` or any other untracked parameter
-into `extra_server_settings`; see [PgBouncer](#pgbouncer).
+into `extra_server_settings`. Consider `pre_ping=False` with a `recycle` below
+PgBouncer's `client_idle_timeout`; see [PgBouncer](#pgbouncer).
 
 ### 6. Enable Metrics in Production
 
@@ -559,9 +589,11 @@ BasePostgresConfig(
 ```
 
 The series to watch is `postgres_db_connection_checkout_wait_seconds` — how long callers
-wait for a connection. It climbs before anything fails, and when it reaches the `timeout`
-above, callers start getting `sqlalchemy.exc.TimeoutError` and
-`postgres_db_connection_timeouts_total` starts moving. A rising
+wait for a connection. It climbs before anything fails, and when the wait in the pool's own
+queue reaches the `timeout` above, callers start getting `sqlalchemy.exc.TimeoutError` and
+`postgres_db_connection_timeouts_total` starts moving. Behind PgBouncer with
+`pre_ping=True` the wait also includes PgBouncer's queue, which `timeout` does not bound
+(see [PgBouncer](#pgbouncer)). A rising
 `postgres_db_connection_held_duration_seconds` with a flat wait is a slower database, not a
 small pool; a rising wait with a flat held duration is a pool that needs more connections.
 See [Advanced → Prometheus Metrics](advanced.md#prometheus-metrics) for the full list.

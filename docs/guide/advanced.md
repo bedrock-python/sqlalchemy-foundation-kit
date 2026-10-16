@@ -314,7 +314,10 @@ one return behind.
 `pool.connect()` before a connection is handed out: the queue wait, plus the pre-ping and
 the connect handshake when the pool has to grow. It is the metric that predicts a pool
 outage — it climbs while the pool saturates, and turns into
-`connection_timeouts_total` when it crosses `pool_timeout`. The held duration is the time
+`connection_timeouts_total` when the wait in the pool's own queue crosses `pool_timeout`.
+Behind a transaction-mode PgBouncer with `pre_ping=True` it also holds PgBouncer's queue,
+which `pool_timeout` does not bound (see
+[Configuration → PgBouncer](configuration.md#pgbouncer)). The held duration is the time
 between the `checkout` and `checkin` events, which is query duration seen from the pool: it
 climbs when the database slows down, whether or not the pool is under any pressure. A
 saturated pool moves both, and only the wait tells you which one caused the other.
@@ -689,12 +692,15 @@ await wait_for_database(session_manager)
 ### PgBouncer Compatibility
 
 `create_async_session_manager` is safe behind PgBouncer in transaction mode as it stands:
-both statement caches default to 0 and the connection class is `AsyncCConnection`, whose
-statement names are unique per connection (both for PgBouncer before 1.22); `jit` is not
-sent unless you set it; and `db_schema` is applied with `SET LOCAL` at the start of every
-transaction rather than as a startup parameter. The one thing left to size is the pool:
-PgBouncer owns the server connections, so `size` is how many client connections this
-process may hold open.
+both statement caches default to 0, so asyncpg sends unnamed statements that any PgBouncer
+carries (raising `statement_cache_size` needs 1.21+ with `max_prepared_statements > 0`, the
+default from 1.24); `jit` is not sent unless you set it; and `db_schema` is applied with
+`SET LOCAL` at the start of every transaction rather than as a startup parameter. Two
+things are left to you. Size the pool: PgBouncer owns the server connections, so `size` is
+how many client connections this process may hold open. And consider `pre_ping=False`:
+the ping is a PgBouncer transaction of its own on every reused checkout, and it is where
+PgBouncer's queue lands, outside `pool_timeout`. A `recycle` below PgBouncer's
+`client_idle_timeout` replaces what the ping protected against.
 
 ```python
 from sqlalchemy_foundation_kit.contrib.settings import (
@@ -705,7 +711,7 @@ from sqlalchemy_foundation_kit.contrib.settings import (
 
 config = BasePostgresConfig(
     connection=ConnectionSettings(host="pgbouncer", port=6432, ...),
-    pool=PoolSettings(size=20, max_overflow=0),
+    pool=PoolSettings(size=20, max_overflow=0, pre_ping=False, recycle=300),
     application_name="my-service",
     db_schema="app",
 )

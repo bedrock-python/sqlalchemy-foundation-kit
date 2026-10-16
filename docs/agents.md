@@ -138,8 +138,8 @@ asyncio.run(main())
 
 With the `settings` extra, `create_async_session_manager(config)` builds the same manager
 from a `PostgresSettingsProtocol` and fills in the PgBouncer-safe defaults for you:
-`AsyncCConnection`, both statement caches at 0, `application_name` as the only startup
-parameter, and `db_schema` applied per transaction as `search_path` (rule 16).
+both statement caches at 0, `application_name` as the only startup parameter, and
+`db_schema` applied per transaction as `search_path` (rule 16).
 
 ## The API
 
@@ -193,7 +193,8 @@ reusable: `build()` does not consume it.
 `create_async_session_manager(postgres_config, application_name=None, metrics=None,
 on_engine_created=None, connection_class=None, extra_server_settings=None,
 extra_connect_args=None, **kwargs)` takes a `PostgresSettingsProtocol` and returns a
-manager. It defaults `connection_class` to `AsyncCConnection`, sends `application_name` —
+manager. It defaults `connection_class` to `AsyncCConnection` (uuid statement names; it
+plays no part in PgBouncer compatibility, rule 16), sends `application_name` —
 and `jit`, only when the config sets it — as `server_settings`, hands `db_schema` to the
 manager as `search_path`, and passes both statement cache sizes through. Your keys in
 `extra_server_settings` / `extra_connect_args` win over the library's; `server_settings`
@@ -448,11 +449,18 @@ decorator.
     transaction. To have the schema without the round-trip use `ALTER ROLE … SET
     search_path`, `ALTER DATABASE … SET`, or schema-qualified metadata. A plain `SET` on a
     connection leaks to the next client through a pooler; never issue one in a `connect`
-    listener. Statement caches stay at 0 and `AsyncCConnection` stays, for PgBouncer before
-    1.22 (`max_prepared_statements=0`); 1.22+ tracks prepared statements itself.
+    listener. With `statement_cache_size=0` (the default) any PgBouncer works: asyncpg
+    sends unnamed statements and parses them on every execution. `statement_cache_size > 0`
+    needs PgBouncer 1.21+ with `max_prepared_statements > 0`, which is the default from 1.24
+    (1.21–1.23 ship it at 0). The connection class plays no part. `pre_ping=True` (the
+    default) costs a second PgBouncer transaction on every reused checkout and puts
+    PgBouncer's queue inside the checkout, outside `pool_timeout`; behind a transaction-mode
+    PgBouncer prefer `PoolSettings(pre_ping=False, recycle=<below client_idle_timeout>)`.
 17. **The wait for a connection and the time it was held are different metrics.** Alert on
     `postgres_db_connection_checkout_wait_seconds` — a rising wait is a pool about to run
-    out, and `postgres_db_connection_timeouts_total` is what it turns into. The held
+    out, and `postgres_db_connection_timeouts_total` is what the pool's own queue turns
+    into at `pool_timeout` (PgBouncer's queue, reached through the pre-ping, is not
+    bounded by it). The held
     duration, `postgres_db_connection_held_duration_seconds`, is query latency seen from
     the pool: it rises when the database slows down, whether or not the pool is under
     pressure. `postgres_db_connection_checkout_duration_seconds` is the held duration under
