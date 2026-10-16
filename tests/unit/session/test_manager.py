@@ -359,14 +359,11 @@ def test__attach_metrics__error_records_error_type() -> None:
         error_callback(exception_context)
 
     # Assert
-    mock_metrics.record_error.assert_called_once()
-    call_args = mock_metrics.record_error.call_args[1]
-    assert call_args["error_type"] == "ValueError"
-    assert call_args["is_timeout"] is False
+    mock_metrics.record_error.assert_called_once_with(error_type="ValueError")
 
 
-def test__attach_metrics__timeout_error__marks_as_timeout() -> None:
-    # Arrange
+def test__attach_metrics__statement_timeout__is_an_error_not_a_connection_timeout() -> None:
+    # Arrange: asyncpg's command_timeout on a running statement -- the connection was fine
     mock_engine = Mock()
     mock_metrics = Mock()
 
@@ -377,32 +374,11 @@ def test__attach_metrics__timeout_error__marks_as_timeout() -> None:
         error_callback = [c[0][2] for c in mock_event.listen.call_args_list if c[0][1] == "handle_error"][0]
 
         exception_context = Mock()
-        exception_context.original_exception = TimeoutError("Connection timeout")
+        exception_context.original_exception = TimeoutError()
         error_callback(exception_context)
 
     # Assert
-    call_args = mock_metrics.record_error.call_args[1]
-    assert call_args["is_timeout"] is True
-
-
-def test__attach_metrics__sqlalchemy_timeout__marks_as_timeout() -> None:
-    # Arrange
-    mock_engine = Mock()
-    mock_metrics = Mock()
-
-    # Act
-    with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
-        attach_metrics(mock_engine, mock_metrics)
-
-        error_callback = [c[0][2] for c in mock_event.listen.call_args_list if c[0][1] == "handle_error"][0]
-
-        exception_context = Mock()
-        exception_context.original_exception = SATimeoutError("Pool timeout")
-        error_callback(exception_context)
-
-    # Assert
-    call_args = mock_metrics.record_error.call_args[1]
-    assert call_args["is_timeout"] is True
+    mock_metrics.record_error.assert_called_once_with(error_type="TimeoutError")
 
 
 def test__attach_metrics__pool_without_size__uses_zero() -> None:
@@ -498,6 +474,87 @@ def test__instrument_pool_class__exhausted_pool__counts_the_timeout_and_reraises
     timed_out_wait = next(duration for duration, timed_out in recorder.waits if timed_out)
     assert timed_out_wait >= 0.1
     held.close()
+
+
+class _WaitAndErrorRecorder(_WaitRecorder):
+    """Also takes errors, as ``PostgresMetrics`` does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.errors: list[str] = []
+
+    def record_error(self, error_type: str, is_timeout: bool = False) -> None:
+        self.errors.append(error_type)
+
+
+class _FakeDBAPIError(Exception):
+    """Stands in for the driver's DBAPI ``Error``."""
+
+
+def _failing_pool(recorder: _WaitRecorder, error: Exception) -> QueuePool:
+    """An instrumented QueuePool whose every attempt to open a connection raises ``error``."""
+
+    def creator() -> None:
+        raise error
+
+    poolclass = instrument_pool_class(QueuePool, recorder)
+    return cast("QueuePool", poolclass(creator, pool_size=1, max_overflow=0, timeout=0.1))
+
+
+def test__instrument_pool_class__connect_timeout__counts_the_timeout_and_reraises() -> None:
+    # Arrange: asyncpg raises a builtin TimeoutError when the connect handshake runs out
+    recorder = _WaitAndErrorRecorder()
+    pool = _failing_pool(recorder, TimeoutError())
+
+    # Act
+    with pytest.raises(TimeoutError):
+        pool.connect()
+
+    # Assert
+    assert recorder.timeouts == 1
+    assert recorder.errors == []
+
+
+def test__instrument_pool_class__connection_refused__records_the_wait_and_the_error() -> None:
+    # Arrange
+    recorder = _WaitAndErrorRecorder()
+    pool = _failing_pool(recorder, ConnectionRefusedError())
+
+    # Act
+    with pytest.raises(ConnectionRefusedError):
+        pool.connect()
+
+    # Assert
+    assert [timed_out for _duration, timed_out in recorder.waits] == [False]
+    assert recorder.errors == ["ConnectionRefusedError"]
+
+
+def test__instrument_pool_class__driver_dbapi_error__left_to_handle_error() -> None:
+    # Arrange: a driver that translates connect errors reports them through handle_error
+    recorder = _WaitAndErrorRecorder()
+    pool = _failing_pool(recorder, _FakeDBAPIError())
+    pool._dialect = Mock(loaded_dbapi=Mock(Error=_FakeDBAPIError))
+
+    # Act
+    with pytest.raises(_FakeDBAPIError):
+        pool.connect()
+
+    # Assert
+    assert len(recorder.waits) == 1
+    assert recorder.errors == []
+
+
+def test__instrument_pool_class__connect_error_with_a_wait_only_recorder__records_the_wait() -> None:
+    # Arrange
+    recorder = _WaitRecorder()
+    pool = _failing_pool(recorder, ConnectionRefusedError())
+
+    # Act
+    with pytest.raises(ConnectionRefusedError):
+        pool.connect()
+
+    # Assert
+    assert [timed_out for _duration, timed_out in recorder.waits] == [False]
 
 
 def test__instrument_pool_class__measures_the_wait_not_the_time_held() -> None:

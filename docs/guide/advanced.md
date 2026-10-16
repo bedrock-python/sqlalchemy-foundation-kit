@@ -275,7 +275,7 @@ session_manager = create_async_session_manager(
 | `myapp_postgres_db_connection_held_duration_seconds` | Histogram | Time a caller **held** a connection, checkout to checkin |
 | `myapp_postgres_db_connection_checkout_duration_seconds` | Histogram | Deprecated alias of the held duration — see below |
 | `myapp_postgres_db_connection_errors_total` | Counter | Database errors by type (`error_type` label) |
-| `myapp_postgres_db_connection_timeouts_total` | Counter | Pool checkout timeouts, and `TimeoutError`s during execution |
+| `myapp_postgres_db_connection_timeouts_total` | Counter | Timeouts acquiring a connection: pool checkout timeouts and connect timeouts. A statement timeout is an error, not one of these |
 
 Without a `prefix` the names are `postgres_db_pool_size` and so on.
 
@@ -300,9 +300,12 @@ keep working, and it will be removed in a future release. Point dashboards at
 `connection_held_duration_seconds` for the same numbers, or at
 `connection_checkout_wait_seconds` if what you actually wanted was the wait.
 
-The wait histogram and the pool-timeout half of the counter are not event listeners —
-SQLAlchemy fires no event when a checkout is *requested* — so they come from the pool class
-the session manager builds. They are populated on any engine created by
+The wait histogram and the timeout counter are not event listeners —
+SQLAlchemy fires no event when a checkout is *requested*, and neither a pool timeout nor a
+failed connect reaches `handle_error` — so they come from the pool class the session
+manager builds. The same pool class counts a connection it could not open (refused, bad
+password) in `connection_errors_total`. A statement that runs into asyncpg's
+`command_timeout` is counted as `connection_errors_total{error_type="TimeoutError"}`. They are populated on any engine created by
 `AsyncSessionManager`, `AsyncSessionManagerBuilder` or `create_async_session_manager`. On
 an engine you build yourself, wrap the pool class:
 
