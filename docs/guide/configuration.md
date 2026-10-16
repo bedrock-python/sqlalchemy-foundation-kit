@@ -172,17 +172,21 @@ ConnectionSettings(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `kind` | `PoolClassStr` | `"async_adapted_queue"` | Pool implementation (`async_adapted_queue`, `static`, `null`) |
-| `size` | `int` | `10` | Number of connections in the pool (minimum 1) |
-| `max_overflow` | `int` | `20` | Additional connections when pool is exhausted (0 or more) |
+| `size` | `int` | `10` | Number of connections the pool keeps open (minimum 1); queue pools only |
+| `max_overflow` | `int` | `20` | Additional connections when pool is exhausted (0 or more); queue pools only |
 | `pre_ping` | `bool` | `True` | Check connection health before use (recommended) |
 | `recycle` | `int` | `3600` | Recycle connections after N seconds (-1 = never) |
-| `timeout` | `float` | `30.0` | Seconds to wait for connection before raising error |
+| `timeout` | `float` | `30.0` | Seconds to wait for connection before raising error; queue pools only |
 
 **Pool Types:**
 
-- **`async_adapted_queue`** (default) — Standard async queue-based pool, recommended for most use cases
-- **`static`** — Fixed-size pool with no overflow (`max_overflow` must be 0)
+- **`async_adapted_queue`** (default) — Standard async queue-based pool, recommended for most use cases. With `max_overflow=0` it is a fixed-size pool
+- **`static`** — SQLAlchemy's `StaticPool`: exactly one connection, shared by every session. Concurrent sessions on it fail (`another operation is in progress`), so it is for tests, never for throughput. `size` must be 1
 - **`null`** — No pooling, creates new connection for each request (not recommended for production)
+
+`size`, `max_overflow` and `timeout` describe a queue of connections, so only the queue
+pools receive them; `static` and `null` ignore them. `recycle` and `pre_ping` apply to
+every pool.
 
 **Example:**
 
@@ -205,14 +209,10 @@ PoolSettings(
     timeout=30.0,
 )
 
-# High-throughput: static pool (no overflow)
+# Fixed size: exactly 50 connections, never more
 PoolSettings(
-    kind="static",
     size=50,
-    max_overflow=0,  # Required for static pool
-    pre_ping=True,
-    recycle=1800,
-    timeout=45.0,
+    max_overflow=0,
 )
 ```
 
@@ -221,18 +221,16 @@ PoolSettings(
 The library validates pool settings:
 
 ```python
-# ❌ This raises ValueError
+# ❌ This raises ValueError: a static pool is one connection
 PoolSettings(
     kind="static",
-    size=10,
-    max_overflow=20,  # ❌ max_overflow must be 0 for static pool
+    size=50,
 )
 
-# ✅ Correct
+# ✅ Correct: one shared connection, for tests
 PoolSettings(
     kind="static",
-    size=10,
-    max_overflow=0,  # ✅ Valid
+    size=1,
 )
 ```
 

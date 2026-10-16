@@ -578,3 +578,47 @@ async def test__create_async_session_manager__db_schema__applied_per_transaction
     assert search_path == SEARCH_PATH_SCHEMA
     assert application_name == "probe"
     assert jit == "on"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "size"), [("async_adapted_queue", 10), ("null", 10), ("static", 1)])
+async def test__create_async_session_manager__every_pool_kind__runs_a_query(
+    postgres_container: PostgresContainer,
+    kind: str,
+    size: int,
+) -> None:
+    # Arrange: the configuration guide's pool kinds, each with a full PoolSettings
+    pytest.importorskip("pydantic_settings")
+    from pydantic import SecretStr
+
+    from sqlalchemy_foundation_kit.contrib.settings.postgres import (
+        BasePostgresConfig,
+        ConnectionSettings,
+        PoolSettings,
+    )
+    from sqlalchemy_foundation_kit.session.factories import create_async_session_manager
+
+    config = BasePostgresConfig(
+        connection=ConnectionSettings(
+            host=postgres_container.get_container_host_ip(),
+            port=int(postgres_container.get_exposed_port(postgres_container.port)),
+            user=postgres_container.username,
+            password=SecretStr(postgres_container.password),
+            database=postgres_container.dbname,
+        ),
+        application_name="probe",
+        pool=PoolSettings(kind=kind, size=size, max_overflow=0),  # type: ignore[arg-type]
+        use_orjson_serialization=False,
+    )
+
+    # Act
+    manager = create_async_session_manager(config)
+    try:
+        async with manager.get_transaction() as session:
+            result = (await session.execute(text("SELECT 1"))).scalar_one()
+    finally:
+        await manager.aclose()
+
+    # Assert
+    assert result == 1

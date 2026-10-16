@@ -224,26 +224,25 @@ def _apply_pool_settings(
     Maps pool settings to SQLAlchemy's expected ``pool_*`` keyword arguments.
     Note: pool_pre_ping is already set in build_engine_kwargs, so not applied here.
 
-    Only applies pool size/overflow/recycle/timeout for pool classes that support them.
-    Checks if the pool class accepts these parameters via hasattr to avoid passing
-    unsupported kwargs to pools like NullPool or StaticPool.
+    ``pool_recycle`` applies to every pool class. ``pool_size``, ``max_overflow`` and
+    ``pool_timeout`` describe a queue of connections and exist only on ``QueuePool``
+    and its subclasses -- the async queue pools, a registered subclass, the class
+    ``instrument_pool_class`` builds. ``create_async_engine`` rejects them for any other
+    pool (``NullPool``, ``StaticPool``), so they are left out there.
 
     Args:
         engine_kwargs: Dictionary to update with pool configuration.
         poolclass: Pool class being configured.
         pool_settings: Pool configuration settings.
     """
-    # Build pool parameters dict
-    params = {
-        "pool_size": pool_settings.size,
-        "max_overflow": pool_settings.max_overflow,
-        "pool_recycle": pool_settings.recycle,
-        "pool_timeout": pool_settings.timeout,
-    }
+    params: dict[str, object] = {"pool_recycle": pool_settings.recycle}
+    if issubclass(poolclass, QueuePool):
+        params.update(
+            pool_size=pool_settings.size,
+            max_overflow=pool_settings.max_overflow,
+            pool_timeout=pool_settings.timeout,
+        )
 
-    # Apply only non-None parameters
-    # SQLAlchemy pool classes that don't support these params will ignore them
-    # or raise TypeError if passed, so we rely on the pool class itself to validate
     engine_kwargs.update({k: v for k, v in params.items() if v is not None})
 
 

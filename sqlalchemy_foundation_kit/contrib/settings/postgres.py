@@ -47,8 +47,15 @@ class PoolSettings(BaseModel):
 
     Groups all connection pool-related parameters for SQLAlchemy engine.
 
+    ``size``, ``max_overflow`` and ``timeout`` apply to the queue pools
+    (``async_adapted_queue``, ``fallback_async_adapted_queue``) and are not passed to any
+    other pool. ``static`` is SQLAlchemy's ``StaticPool``: one connection shared by every
+    session, which concurrent sessions cannot use safely -- for tests, never as a
+    fixed-size pool. A fixed-size pool is ``async_adapted_queue`` with ``max_overflow=0``.
+
     Examples:
         >>> pool = PoolSettings(size=10, max_overflow=20)
+        >>> fixed = PoolSettings(size=10, max_overflow=0)
     """
 
     kind: PoolClassStr = Field(
@@ -68,8 +75,11 @@ class PoolSettings(BaseModel):
     @model_validator(mode="after")
     def _validate_pool_settings(self) -> PoolSettings:
         """Validate pool configuration constraints."""
-        if self.kind == "static" and self.max_overflow > 0:
-            raise ValueError(f"max_overflow must be 0 for static pool, got {self.max_overflow}")
+        if self.kind == "static" and self.size > 1:
+            raise ValueError(
+                f"size must be 1 for a static pool, got {self.size}: a static pool is one connection "
+                "shared by every session. For a fixed-size pool use kind='async_adapted_queue' with max_overflow=0"
+            )
         return self
 
 

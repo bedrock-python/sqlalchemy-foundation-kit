@@ -120,7 +120,7 @@ class Transaction(AsyncSQLAlchemyUowTransaction):
 async def main() -> None:
     manager = AsyncSessionManager(
         "postgresql+asyncpg://user:pass@localhost:5432/app",
-        poolclass="async_adapted_queue",     # the default is "null" — no pooling
+        poolclass="async_adapted_queue",     # without pool_settings the default is "null" — no pooling
     )
     uow = AsyncSQLAlchemyUnitOfWork(manager.session_maker, transaction_factory=Transaction)
 
@@ -161,10 +161,11 @@ from the submodule named beside it further down.
 
 ### `AsyncSessionManager`
 
-`AsyncSessionManager(url, echo=False, poolclass="null", session_class=None,
+`AsyncSessionManager(url, echo=False, poolclass=None, session_class=None,
 expire_on_commit=False, connect_args=None, isolation_level=None, pool_settings=None,
 use_orjson=False, metrics=None, on_engine_created=None, dispose_timeout=30.0,
-search_path=None, **kwargs)` — `**kwargs` reach `create_async_engine`. `search_path`
+search_path=None, **kwargs)` — `**kwargs` reach `create_async_engine`. `poolclass=None`
+means `pool_settings.kind` when `pool_settings` is given, otherwise `"null"`. `search_path`
 attaches a `begin` listener to the engine that runs `set_config('search_path', …, true)` —
 `SET LOCAL` — as the first statement of every transaction, autobegun ones included;
 nothing is attached when it is `None`.
@@ -286,7 +287,8 @@ and raises `ValueError` on an unknown name; `PoolRegistry.list_available()` list
 `build_engine_kwargs(echo, poolclass, isolation_level, pool_settings, connect_args,
 extra_kwargs, use_orjson=False)` assembles the `create_async_engine` keywords: it always
 sets `pool_pre_ping` (from `pool_settings.pre_ping`, else `True`), copies non-`None` pool
-settings to `pool_size` / `max_overflow` / `pool_recycle` / `pool_timeout`, drops `None`
+settings to `pool_recycle` and — only for a `QueuePool` subclass — `pool_size` /
+`max_overflow` / `pool_timeout`, which `NullPool` and `StaticPool` reject; drops `None`
 values out of `connect_args`, and merges `extra_kwargs` last.
 `configure_orjson_serialization()` returns the `json_serializer` / `json_deserializer`
 pair and raises `ImportError` without orjson.
@@ -306,7 +308,7 @@ With the `settings` extra, `sqlalchemy_foundation_kit.contrib.settings` implemen
 | Model | Fields and defaults |
 |---|---|
 | `ConnectionSettings` | `host="localhost"`, `port=5432` (1–65535), `user="postgres"`, `password: SecretStr` **required**, `database: str` **required** |
-| `PoolSettings` | `kind="async_adapted_queue"`, `size=10`, `max_overflow=20`, `pre_ping=True`, `recycle=3600`, `timeout=30.0`. `kind="static"` with `max_overflow > 0` raises |
+| `PoolSettings` | `kind="async_adapted_queue"`, `size=10`, `max_overflow=20`, `pre_ping=True`, `recycle=3600`, `timeout=30.0`. `kind="static"` with `size > 1` raises: `StaticPool` is one shared connection, for tests. A fixed-size pool is `async_adapted_queue` with `max_overflow=0`. `size` / `max_overflow` / `timeout` reach queue pools only |
 | `QuerySettings` | `echo=False`, `statement_cache_size=0`, `prepared_statement_cache_size=0`, `isolation_level=None` |
 | `BasePostgresConfig` | `connection` **required**, `pool`, `query`, `application_name: str` **required**, `db_schema=None`, `use_orjson_serialization=True`, `jit=None`, `metrics_enabled=False`. `to_dsn(driver="asyncpg", mask_password=False)`; `__repr__` prints the masked DSN. `db_schema` is a `search_path` value applied per transaction (rule 16); `jit` is a startup parameter and is sent only when set |
 | `BasePostgresMigrationsConfig` | `postgres: BasePostgresConfig`, with `env_nested_delimiter="__"` and `extra="ignore"` |
@@ -368,9 +370,11 @@ decorator.
 2. **PostgreSQL over asyncpg only.** The DSN is `postgresql+asyncpg://…`.
    `create_async_session_manager` passes an asyncpg-specific `connection_class` and
    asyncpg-specific `connect_args`; another driver rejects them.
-3. **The default `poolclass` is `"null"` — no pooling at all.** That default is for tests.
-   A service wants `"async_adapted_queue"`, either as `poolclass=` or as
-   `PoolSettings.kind`, whose default is already correct.
+3. **Without `pool_settings`, the default `poolclass` is `"null"` — no pooling at all.**
+   That default is for tests. A service wants `"async_adapted_queue"`, either as
+   `poolclass=` or as `PoolSettings.kind`, whose default is already correct; when
+   `pool_settings` is passed without `poolclass`, its `kind` is used. `"queue"` and
+   `"singleton_thread"` are sync pools and raise `ArgumentError` on the async engine.
 4. **The commit belongs to the unit of work, never to a repository.** A repository
    `flush()`es; `transaction()` commits. A `session.commit()` inside a repository ends the
    transaction under everything else that was going to share it.
@@ -576,7 +580,7 @@ SQLAlchemy's through untouched.
 | `ImportError` | an extra is missing: `orjson`, `pydantic-settings`, `prometheus-client`, the OpenTelemetry instrumentations, `dishka`, `dependency-injector`. The message names the extra to install |
 | `RuntimeError` | `"AsyncSessionManager is closed"` — a session asked for after `aclose()` |
 | `ValueError` | an isolation level `normalize_isolation_level` does not know; an unregistered pool name; a pool name registered twice without `override=True`; `max_retries < 1`; a metric prefix that is not a Prometheus identifier |
-| `pydantic.ValidationError` | a `contrib.settings` model built without `password`, `database` or `application_name`, or a `static` pool with `max_overflow > 0` |
+| `pydantic.ValidationError` | a `contrib.settings` model built without `password`, `database` or `application_name`, or a `static` pool with `size > 1` |
 | `TypeError` | a value orjson cannot serialize; `manager.get_transaction()` on 0.2.0 (see above) |
 | `sqlalchemy.exc.IllegalStateChangeError` | one session driven by two tasks at once (rule 6) |
 | `sqlalchemy.exc.InvalidRequestError` | `isolation_level` on a unit-of-work method on 0.2.0 (see above) |
