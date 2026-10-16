@@ -64,6 +64,15 @@ def test__safe_metric_call__exception__does_not_propagate() -> None:
 # ============================================================================
 
 
+def _event_sampled_metrics() -> Mock:
+    """Metrics without ``set_pool_stats_functions``, so the pool events sample the gauges.
+
+    A bare ``Mock()`` will not do: before Python 3.12 a runtime protocol check is a
+    ``hasattr`` per member, which a ``Mock`` passes for any name.
+    """
+    return Mock(spec=["record_pool_stats", "record_checkout", "record_error"])
+
+
 def test__attach_metrics__registers_checkout_listener() -> None:
     # Arrange
     mock_engine = Mock()
@@ -119,7 +128,7 @@ def test__attach_metrics__checkout_records_pool_stats() -> None:
     mock_engine = Mock()
     mock_engine.pool = mock_pool
 
-    mock_metrics = Mock()
+    mock_metrics = _event_sampled_metrics()
 
     # Act
     with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
@@ -151,7 +160,7 @@ def test__attach_metrics__checkout_on_a_pool_below_its_size__records_no_negative
     mock_engine.pool.size.return_value = 10
     mock_engine.pool.checkedout.return_value = 1
     mock_engine.pool.overflow.return_value = -9
-    mock_metrics = Mock()
+    mock_metrics = _event_sampled_metrics()
 
     # Act
     with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
@@ -401,7 +410,7 @@ def test__attach_metrics__pool_without_size__uses_zero() -> None:
     mock_pool = Mock(spec=[])  # No size method
     mock_engine = Mock()
     mock_engine.pool = mock_pool
-    mock_metrics = Mock()
+    mock_metrics = _event_sampled_metrics()
 
     # Act
     with patch("sqlalchemy_foundation_kit.session.manager.event") as mock_event:
