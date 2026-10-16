@@ -61,8 +61,8 @@ Five nouns, in the order a request passes through them.
   application is correct and intended.
 * **A context manager on it opens exactly one session** and closes it on exit.
   `transaction()` commits on success and rolls back on exception; `managed_session()`
-  hands you the session and commits nothing; `query()` starts no transaction of its own
-  and throws away anything you write.
+  hands you the session and commits nothing; `query()` runs one `READ ONLY` transaction
+  that is rolled back on exit, so a write inside it raises.
 * **The transaction object** is what the context manager yields: your subclass of
   `AsyncSQLAlchemyUowTransaction`, constructed with that session, exposing your
   repositories as properties. `tx.session` is the `AsyncSession` underneath;
@@ -127,7 +127,7 @@ async def main() -> None:
     async with uow.transaction() as tx:      # commits on exit, rolls back on exception
         await tx.users.add("user@example.com")
 
-    async with uow.query() as qx:            # read only: writes here are discarded
+    async with uow.query() as qx:            # READ ONLY: a write here raises (SQLSTATE 25006)
         users = (await qx.session.execute(select(UserDB))).scalars().all()
 
     await manager.aclose()
@@ -235,7 +235,7 @@ a wait histogram that never moves.
 |---|---|---|---|---|
 | `transaction(isolation_level=None, flush_before_commit=None)` | `session.begin()` | flush, then **commit** | rollback | `T` |
 | `managed_session(isolation_level=None)` | `await session.begin()` | nothing — **you** commit | rollback | `(T, AsyncSession)` |
-| `query(isolation_level=None)` | none started | nothing; session closes | session closes | `T` |
+| `query(isolation_level=None)` | one `READ ONLY` transaction | rolled back; session closes | rolled back; session closes | `T` |
 | `open_session(isolation_level=None)` | none | nothing | nothing | `AsyncSession` |
 
 `open_session` is the documented extension point: override it in a subclass to set a GUC,
@@ -391,9 +391,13 @@ decorator.
 4. **The commit belongs to the unit of work, never to a repository.** A repository
    `flush()`es; `transaction()` commits. A `session.commit()` inside a repository ends the
    transaction under everything else that was going to share it.
-5. **`query()` throws writes away.** It starts no transaction and commits nothing, so the
-   session's implicit transaction is rolled back at close. An `INSERT` issued there is
-   silently gone — verified, not theorised. Use `transaction()` for anything that writes.
+5. **`query()` is a read-only transaction.** It opens one `READ ONLY` transaction and rolls
+   it back on exit, so an `INSERT`, `UPDATE`, `DELETE`, DDL or `nextval()` inside it fails
+   with SQLSTATE 25006. Reads, `SET LOCAL` and advisory locks work. It is still a
+   transaction: the locks it takes (`AccessShareLock` on every table read) are held until
+   the block exits, `now()` is fixed at its first statement, and a slow `await` inside it
+   leaves the connection `idle in transaction`. Keep it short; use `transaction()` for
+   anything that writes. On 0.4.0 and earlier it was not read-only — see the table below.
 6. **One session, one task.** The session a context manager yields is not concurrency-safe:
    `asyncio.gather` over statements on the same `tx` raises
    `IllegalStateChangeError`. Fan out by opening a `transaction()` per task, not by sharing
@@ -414,8 +418,8 @@ decorator.
    new replicas holding different locks for the same name until it finishes.
 9. **An advisory lock is only held while its transaction is.** `pg_try_advisory_xact_lock`
    releases at transaction end, so take it inside `transaction()` or `managed_session()`
-   and do the protected work in the same block. Taking one in `query()` is a no-op with a
-   `True` return.
+   and do the protected work in the same block. One taken in `query()` is held until the
+   block exits, then released — it protects only what that read-only block does.
 10. **`managed_session()` commits nothing.** Leaving the block without calling
     `await session.commit()` rolls everything back at close, quietly. Use `transaction()`
     unless the commit decision genuinely depends on something you learn after writing.
@@ -484,6 +488,7 @@ is what to do on the version the row names.
 | `postgres_db_pool_overflow`, `postgres_db_pool_checked_out` (0.4.0 and earlier) | sampled from the `checkout` / `checkin` events: `overflow` exported `QueuePool.overflow()`, which starts at `-pool_size` (`-9` with one connection open of 10), and since `checkin` fires before the connection is back, an idle pool kept reporting its last burst as checked out | read `pool.checkedout()` and `max(pool.overflow(), 0)` yourself |
 | `postgres_db_connection_timeouts_total` (0.4.0) | counted asyncpg statement timeouts — a slow query, on a healthy connection — and missed connect timeouts, which never reach `handle_error`. A database refusing connections moved no series at all | alert on `connection_errors_total{error_type="TimeoutError"}` for slow statements, and on the checkout wait for connections |
 | `uow.transaction()` with a failing flush (0.4.0 and earlier, `flush_before_commit=True`, the default) | logged `str(exc)` at WARNING as `extra={"error": ...}` before re-raising: the statement's parameters and PostgreSQL's `DETAIL: Key (...)=(...)` row values went to the logs, and `hide_parameters=True` removed only the parameters | `flush_before_commit=False`; the same exception still reaches the caller |
+| `uow.query()` (0.4.0 and earlier) | documented as read-only and transaction-free, but ran an ordinary autobegun transaction: a write followed by `qx.session.commit()` was persisted, and without the commit it was rolled back silently | do reads in `query()` and every write in `transaction()` |
 | `postgres_db_connection_checkout_duration_seconds` (0.3.0 and earlier) | the only checkout histogram there was, and it measures the time between the `checkout` and `checkin` events — how long a connection was *held*, which is query duration seen from the pool. The time a caller waited for a connection, which is what the name suggests and what predicts a pool outage, was not exposed at all | none; the wait was not measurable from outside the pool |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,
@@ -512,7 +517,7 @@ class UserRepository:
 ```
 
 ```python
-# WRONG — query() starts no transaction, so this INSERT is rolled back at close
+# WRONG — query() is a READ ONLY transaction: this INSERT raises (SQLSTATE 25006)
 async with uow.query() as qx:
     await qx.users.add("user@example.com")
 

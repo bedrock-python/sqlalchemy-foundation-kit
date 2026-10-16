@@ -330,6 +330,7 @@ async def test__traced_async_unit_of_work__query_with_isolation_level__sets_attr
     mock_transaction = MagicMock()
     mock_session = AsyncMock()
     mock_session.begin = MagicMock()
+    mock_session.in_transaction = MagicMock(return_value=True)
     mock_session.close = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock()

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import func, select, text
@@ -12,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy_foundation_kit.session.manager import AsyncSessionManager
 from sqlalchemy_foundation_kit.uow.enums import IsolationLevel
 from sqlalchemy_foundation_kit.uow.sqlalchemy import AsyncSQLAlchemyUnitOfWork, AsyncSQLAlchemyUowTransaction
-from tests.integration.conftest import SEARCH_PATH_SCHEMA
+from tests.integration.conftest import SEARCH_PATH_SCHEMA, PostgresContainer, asyncpg_url
 from tests.integration.models import TestUser
 
 
@@ -422,3 +425,149 @@ async def test__transaction__failed_flush__row_values_reach_the_caller_and_no_lo
     assert email in str(raised.value)
     # ...and the library wrote none of it to the logs, at any level
     assert [r for r in caplog.records if r.name.startswith("sqlalchemy_foundation_kit")] == []
+
+
+# ============================================================================
+# Read-Only query() Tests (issue #56 scenario)
+# ============================================================================
+
+READ_ONLY_SQL_TRANSACTION = "25006"
+
+
+@dataclass
+class _OneConnection:
+    kind: str = "async_adapted_queue"
+    size: int = 1
+    max_overflow: int = 0
+    pre_ping: bool = False
+    recycle: int = -1
+    timeout: float = 5.0
+
+
+def _sqlstate(error: DBAPIError) -> str | None:
+    return getattr(error.orig, "sqlstate", None)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__insert_and_commit__rejected_and_nothing_persisted(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+    async_session: AsyncSession,
+) -> None:
+    # Arrange: the reporter's write through query(), committed explicitly
+    email = "written-inside-query@example.com"
+
+    # Act
+    with pytest.raises(DBAPIError) as raised:
+        async with uow.query() as qx:
+            qx.session.add(TestUser(name="Query", email=email, age=30))
+            await qx.session.commit()
+
+    # Assert
+    assert _sqlstate(raised.value) == READ_ONLY_SQL_TRANSACTION
+    result = await async_session.execute(select(TestUser).where(TestUser.email == email))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__reads__run_in_a_read_only_transaction(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act
+    async with uow.query() as qx:
+        read_only = (await qx.session.execute(text("SHOW transaction_read_only"))).scalar_one()
+        users = (await qx.session.execute(select(func.count()).select_from(TestUser))).scalar_one()
+
+    # Assert
+    assert read_only == "on"
+    assert users == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__isolation_level__read_only_as_well(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+) -> None:
+    # Act: the isolation level checks the connection out first, so the block marks the
+    # transaction itself
+    async with uow.query(isolation_level=IsolationLevel.SERIALIZABLE) as qx:
+        isolation = await _transaction_isolation(qx.session)
+        read_only = (await qx.session.execute(text("SHOW transaction_read_only"))).scalar_one()
+
+    # Assert
+    assert (isolation, read_only) == ("serializable", "on")
+
+
+class _StatementFirstUnitOfWork(AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction]):
+    """The ``open_session`` override from its docstring: a statement before the block runs."""
+
+    @asynccontextmanager
+    async def open_session(self, isolation_level: IsolationLevel | str | None = None) -> AsyncIterator[AsyncSession]:
+        async with super().open_session(isolation_level) as session:
+            await session.execute(text("SELECT set_config('app.tenant_id', '7', true)"))
+            yield session
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__open_session_override_ran_a_statement__still_read_only(
+    async_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Arrange
+    uow = _StatementFirstUnitOfWork(async_session_factory, transaction_factory=AsyncSQLAlchemyUowTransaction)
+
+    # Act
+    with pytest.raises(DBAPIError) as raised:
+        async with uow.query() as qx:
+            tenant = (await qx.session.execute(text("SELECT current_setting('app.tenant_id')"))).scalar_one()
+            assert tenant == "7"
+            await qx.session.execute(text("INSERT INTO test_users (name, email, age) VALUES ('x', 'x@x', 1)"))
+
+    # Assert
+    assert _sqlstate(raised.value) == READ_ONLY_SQL_TRANSACTION
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__connection_back_in_the_pool__next_transaction_can_write(
+    postgres_container: PostgresContainer,
+) -> None:
+    # Arrange: one connection, so the transaction after query() gets the very same one
+    manager: AsyncSessionManager[AsyncSession] = AsyncSessionManager(
+        asyncpg_url(postgres_container),
+        poolclass="async_adapted_queue",
+        pool_settings=_OneConnection(),
+    )
+    uow = AsyncSQLAlchemyUnitOfWork(manager.session_maker, transaction_factory=AsyncSQLAlchemyUowTransaction)
+
+    # Act
+    async with manager:
+        async with uow.query() as qx:
+            reader_pid = (await qx.session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        async with uow.transaction() as tx:
+            writer_pid = (await tx.session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            read_only = (await tx.session.execute(text("SHOW transaction_read_only"))).scalar_one()
+            tx.session.add(TestUser(name="After", email="after-query@example.com", age=40))
+
+    # Assert
+    assert writer_pid == reader_pid
+    assert read_only == "off"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test__query__advisory_lock__held_until_the_block_exits(
+    uow: AsyncSQLAlchemyUnitOfWork[AsyncSQLAlchemyUowTransaction],
+    async_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Act
+    async with uow.query() as qx:
+        mine = (await qx.session.execute(text("SELECT pg_try_advisory_xact_lock(56)"))).scalar_one()
+        async with async_session_factory() as other:
+            theirs_meanwhile = (await other.execute(text("SELECT pg_try_advisory_xact_lock(56)"))).scalar_one()
+    async with async_session_factory() as other:
+        theirs_after = (await other.execute(text("SELECT pg_try_advisory_xact_lock(56)"))).scalar_one()
+
+    # Assert
+    assert (mine, theirs_meanwhile, theirs_after) == (True, False, True)
