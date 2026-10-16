@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.4.0...sqlalchemy-foundation-kit-v0.5.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* BasePostgresConfig.use_orjson_serialization now defaults to False, matching AsyncSessionManager and the builder. A service that has orjson installed, kept the default, and writes values only orjson serializes (datetime, UUID, Decimal, non-str keys) into JSON columns now gets StatementError (TypeError: Object of type datetime is not JSON serializable). Set use_orjson_serialization=True to keep the old behaviour.
+* uow.query() now opens its transaction READ ONLY. A write inside it (INSERT, UPDATE, DELETE, DDL, nextval()) fails with SQLSTATE 25006 instead of being rolled back silently, or persisted when followed by an explicit session.commit(). Move writes to uow.transaction().
+
+### Bug Fixes
+
+* build null and static pools from PoolSettings, and stop recommending the sync queue pool ([#61](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/61)) ([608d327](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/608d32747361321895f6fc43f5e77da6937375ff))
+* count connect timeouts, not statement timeouts, in connection_timeouts_total ([#63](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/63)) ([961e0e8](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/961e0e862cb540525cda99b5ecc79ee12cbab2e4))
+* default use_orjson_serialization to False, so the [settings] quick start runs ([#66](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/66)) ([3addfdd](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/3addfdd50c98657966867b680121facd596b6810))
+* read the pool gauges when they are scraped, and never export a negative overflow ([#62](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/62)) ([e85ac96](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/e85ac96bd875ee47729f029c8046ea85be48f712))
+* run query() in a READ ONLY transaction, as documented ([#64](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/64)) ([cb77404](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/cb7740468cc86d1d7e9f7bda80d56b27b0300739))
+* stop logging a failed flush's parameters and row values ([#65](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/65)) ([6dd88ba](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/6dd88ba34de6f6fa3306f7e9002788ab57f7797c))
+
 ## [0.4.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.3.0...sqlalchemy-foundation-kit-v0.4.0) (2026-09-07)
 
 
