@@ -240,8 +240,10 @@ a wait histogram that never moves.
 `open_session` is the documented extension point: override it in a subclass to set a GUC,
 an RLS context or a statement timeout on every session, calling `super().open_session(...)`
 inside. `flush_before_commit=None` on `transaction()` falls back to the constructor value
-(`True`), which flushes before the commit so an integrity error surfaces inside the block
-rather than at exit. An `isolation_level` argument takes an `IsolationLevel` or a string
+(`True`), which flushes explicitly before the commit. The commit flushes too, so either way
+an integrity error raises as the block exits, through the same rollback, and reaches the
+caller unchanged; the library does not log it, because its message carries parameters and
+PostgreSQL's `DETAIL` row values. An `isolation_level` argument takes an `IsolationLevel` or a string
 in either spelling, and is set on the connection the block checks out, so it covers this
 transaction and leaves the engine alone. Setting it has to happen before the transaction
 starts, so it opens the transaction as the block is entered — `query()` included.
@@ -473,6 +475,7 @@ is what to do on the version the row names.
 | `postgres_db_connection_timeouts_total` (0.3.0 and earlier) | stayed at zero through every pool checkout timeout. The counter was fed only from the engine's `handle_error` listener, and a pool `TimeoutError` is raised by `pool.connect()` before any DBAPI call, so it never reaches that listener — the one timeout a pool actually produces under load was the one the counter did not count | count `sqlalchemy.exc.TimeoutError` around your own session calls |
 | `postgres_db_pool_overflow`, `postgres_db_pool_checked_out` (0.4.0 and earlier) | sampled from the `checkout` / `checkin` events: `overflow` exported `QueuePool.overflow()`, which starts at `-pool_size` (`-9` with one connection open of 10), and since `checkin` fires before the connection is back, an idle pool kept reporting its last burst as checked out | read `pool.checkedout()` and `max(pool.overflow(), 0)` yourself |
 | `postgres_db_connection_timeouts_total` (0.4.0) | counted asyncpg statement timeouts — a slow query, on a healthy connection — and missed connect timeouts, which never reach `handle_error`. A database refusing connections moved no series at all | alert on `connection_errors_total{error_type="TimeoutError"}` for slow statements, and on the checkout wait for connections |
+| `uow.transaction()` with a failing flush (0.4.0 and earlier, `flush_before_commit=True`, the default) | logged `str(exc)` at WARNING as `extra={"error": ...}` before re-raising: the statement's parameters and PostgreSQL's `DETAIL: Key (...)=(...)` row values went to the logs, and `hide_parameters=True` removed only the parameters | `flush_before_commit=False`; the same exception still reaches the caller |
 | `postgres_db_connection_checkout_duration_seconds` (0.3.0 and earlier) | the only checkout histogram there was, and it measures the time between the `checkout` and `checkin` events — how long a connection was *held*, which is query duration seen from the pool. The time a caller waited for a connection, which is what the name suggests and what predicts a pool outage, was not exposed at all | none; the wait was not measurable from outside the pool |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,

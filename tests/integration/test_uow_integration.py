@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -386,3 +388,37 @@ async def test__managed_session__search_path__reapplied_after_the_caller_commits
     assert before == SEARCH_PATH_SCHEMA
     assert after == SEARCH_PATH_SCHEMA
     assert count == 1
+
+
+# ============================================================================
+# Failed Flush Logging Tests (issue #57 scenario)
+# ============================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flush_before_commit", [True, False])
+async def test__transaction__failed_flush__row_values_reach_the_caller_and_no_log(
+    async_session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    flush_before_commit: bool,
+) -> None:
+    # Arrange: the reporter's duplicate email, on the default flush_before_commit=True path too
+    uow = AsyncSQLAlchemyUnitOfWork(async_session_factory, transaction_factory=AsyncSQLAlchemyUowTransaction)
+    email = "jane.doe@example.org"
+    async with uow.transaction() as tx:
+        tx.session.add(TestUser(name="Jane", email=email, age=30))
+
+    # Act
+    with caplog.at_level(logging.DEBUG, logger="sqlalchemy_foundation_kit"):
+        with pytest.raises(IntegrityError) as raised:
+            async with uow.transaction(flush_before_commit=flush_before_commit) as tx:
+                tx.session.add(TestUser(name="Jane again", email=email, age=31))
+
+    # Assert: the caller has everything needed to debug it...
+    assert raised.value.orig is not None
+    assert getattr(raised.value.orig, "sqlstate", None) == "23505"
+    assert getattr(raised.value.orig.__cause__, "constraint_name", None) == "test_users_email_key"
+    assert email in str(raised.value)
+    # ...and the library wrote none of it to the logs, at any level
+    assert [r for r in caplog.records if r.name.startswith("sqlalchemy_foundation_kit")] == []

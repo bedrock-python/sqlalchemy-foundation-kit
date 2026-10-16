@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -520,14 +521,14 @@ async def test__transaction__flush_override__overrides_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test__transaction__flush_error__logs_warning_and_raises() -> None:
-    # Arrange
+async def test__transaction__flush_error__raises_without_logging(caplog: pytest.LogCaptureFixture) -> None:
+    # Arrange: a flush error's message carries parameters and PostgreSQL's DETAIL row values
     mock_session = AsyncMock(spec=AsyncSession)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_session.begin = AsyncMock()
     mock_session.in_transaction = Mock(return_value=False)
-    mock_session.flush = AsyncMock(side_effect=SQLAlchemyError("Flush error"))
+    mock_session.flush = AsyncMock(side_effect=SQLAlchemyError("Key (email)=(jane.doe@example.org) already exists"))
 
     mock_transaction = Mock()
     mock_session_maker = Mock(return_value=mock_session)
@@ -536,12 +537,13 @@ async def test__transaction__flush_error__logs_warning_and_raises() -> None:
     uow = AsyncSQLAlchemyUnitOfWork(mock_session_maker, mock_factory)
 
     # Act & Assert
-    with patch("sqlalchemy_foundation_kit.uow.sqlalchemy.logger") as mock_logger:
-        with pytest.raises(SQLAlchemyError):
+    with caplog.at_level(logging.DEBUG, logger="sqlalchemy_foundation_kit"):
+        with pytest.raises(SQLAlchemyError, match=r"jane\.doe@example\.org"):
             async with uow.transaction():
                 pass
 
-        mock_logger.warning.assert_called_once()
+    assert caplog.records == []
+    mock_session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio
