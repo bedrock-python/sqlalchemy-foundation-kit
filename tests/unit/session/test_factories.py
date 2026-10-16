@@ -617,3 +617,50 @@ def test__create_async_session_manager__db_schema__becomes_the_manager_search_pa
     call_kwargs = mock_manager_class.call_args[1]
     assert call_kwargs["connect_args"]["server_settings"] == {"application_name": "pgbouncer-lab"}
     assert call_kwargs["search_path"] == "app"
+
+
+# ============================================================================
+# create_async_session_manager - orjson (issue #59 scenario)
+# ============================================================================
+
+
+@pytest.fixture
+def without_orjson(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``import orjson`` fail, as on a ``[settings]``-only install."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "orjson", None)
+
+
+def _quick_start_config(**overrides: Any) -> BasePostgresConfig:
+    return BasePostgresConfig(
+        connection=ConnectionSettings(password=SecretStr("secret"), database="app"),
+        application_name="my-service",
+        **overrides,
+    )
+
+
+async def test__create_async_session_manager__quick_start_config_without_orjson__builds_the_manager(
+    without_orjson: None,
+) -> None:
+    # Arrange: the quick start's config, defaults only, with nothing but [settings] installed
+    config = _quick_start_config()
+
+    # Act
+    manager = create_async_session_manager(config)
+
+    # Assert: the engine is built (nothing connects) with SQLAlchemy's own JSON serializer
+    assert config.use_orjson_serialization is False
+    assert manager.engine.dialect._json_serializer is None  # type: ignore[attr-defined]
+    await manager.aclose()
+
+
+def test__create_async_session_manager__orjson_asked_for_without_orjson__raises_naming_the_extra(
+    without_orjson: None,
+) -> None:
+    # Arrange
+    config = _quick_start_config(use_orjson_serialization=True)
+
+    # Act & Assert: opting in without the extra stays a loud error
+    with pytest.raises(ImportError, match=r"sqlalchemy-foundation-kit\[orjson\]"):
+        create_async_session_manager(config)

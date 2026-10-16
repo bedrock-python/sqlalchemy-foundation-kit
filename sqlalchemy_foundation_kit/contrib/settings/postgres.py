@@ -110,7 +110,9 @@ class BasePostgresConfig(BaseSettings):
         application_name: Application name for connection identification.
         db_schema: Optional PostgreSQL ``search_path`` — a schema, or a comma-separated
             list — applied to every transaction with ``SET LOCAL`` semantics.
-        use_orjson_serialization: Use orjson for JSON serialization (requires orjson).
+        use_orjson_serialization: Serialize JSON / JSONB columns with orjson. Off by default:
+            it needs the ``orjson`` extra, and orjson serializes some values (``datetime``,
+            ``UUID``, ``Decimal``, non-``str`` keys) that ``json.dumps`` rejects.
         jit: JIT compilation setting (off/on), sent as a startup parameter only when set.
             ``None`` (the default) sends nothing and leaves the server's own setting; a
             transaction-mode PgBouncer rejects the parameter unless it tracks it.
@@ -143,8 +145,8 @@ class BasePostgresConfig(BaseSettings):
         description="PostgreSQL search_path (a schema or a comma-separated list), applied to every transaction",
     )
     use_orjson_serialization: bool = Field(
-        default=True,
-        description="Use orjson for JSON serialization (requires orjson installed)",
+        default=False,
+        description="Use orjson for JSON serialization (requires the orjson extra)",
     )
     jit: PostgresJit | None = Field(
         default=None,

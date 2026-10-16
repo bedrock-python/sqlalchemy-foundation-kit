@@ -143,7 +143,7 @@ class PostgresSettingsProtocol(Protocol):
             ...     query: QuerySettingsProtocol
             ...     application_name: str = "my-app"
             ...     db_schema: str | None = None
-            ...     use_orjson_serialization: bool = True
+            ...     use_orjson_serialization: bool = False
             ...     jit: str | None = None
             ...
             ...     def to_dsn(self) -> str:

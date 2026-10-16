@@ -146,7 +146,7 @@ class PostgresConfig:
     query: QuerySettingsProtocol = MyQuerySettings()
     application_name: str = "my-service"
     db_schema: str | None = None
-    use_orjson_serialization: bool = True
+    use_orjson_serialization: bool = False
     jit: str | None = None
     
     def to_dsn(self) -> str:
