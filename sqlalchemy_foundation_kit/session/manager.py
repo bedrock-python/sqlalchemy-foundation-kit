@@ -226,7 +226,7 @@ class AsyncSessionManager(Generic[SessionT]):
         self,
         url: str,
         echo: bool = False,
-        poolclass: str | type = "null",
+        poolclass: str | type | None = None,
         session_class: type[SessionT] | None = None,
         expire_on_commit: bool = False,
         connect_args: dict[str, object] | None = None,
@@ -244,13 +244,18 @@ class AsyncSessionManager(Generic[SessionT]):
         Args:
             url: Database connection URL (required).
             echo: If True, SQLAlchemy will log all SQL statements (default: False).
-            poolclass: SQLAlchemy pool class or name (default: "null").
-                Use "queue" for production, "null" for testing.
+            poolclass: SQLAlchemy pool class or name. Defaults to ``pool_settings.kind``
+                when ``pool_settings`` is given, otherwise to ``"null"`` -- a new connection
+                for every checkout, which suits tests and scripts. A service wants
+                ``"async_adapted_queue"``. The sync pools (``"queue"``,
+                ``"singleton_thread"``) cannot run on an async engine.
             session_class: Custom ``AsyncSession`` subclass (default: ``AsyncSession``).
             expire_on_commit: If True, objects expire after commit (default: False).
             connect_args: Arguments passed to the database driver (default: None).
             isolation_level: Default transaction isolation level (default: None).
-            pool_settings: Pool configuration settings (default: None).
+            pool_settings: Pool configuration settings (default: None). ``size``,
+                ``max_overflow`` and ``timeout`` apply to the queue pools only; ``recycle``
+                and ``pre_ping`` apply to every pool.
             use_orjson: If True, use orjson for JSON serialization (default: False).
             metrics: Optional metrics collector (default: None). One that also implements
                 ``CheckoutWaitRecorder`` gets the pool class wrapped by
@@ -270,6 +275,8 @@ class AsyncSessionManager(Generic[SessionT]):
         self._closed = False
         self._close_lock = asyncio.Lock()
         self._dispose_timeout = dispose_timeout
+        if poolclass is None:
+            poolclass = pool_settings.kind if pool_settings is not None else "null"
         resolved_poolclass = resolve_pool_class(poolclass)
         if metrics is not None and isinstance(metrics, CheckoutWaitRecorder):
             # The wait for a connection is not observable from a pool event, so it has to

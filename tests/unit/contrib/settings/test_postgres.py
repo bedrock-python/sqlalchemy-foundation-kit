@@ -135,20 +135,20 @@ def test__pool_settings__custom_values__succeeds() -> None:
 
 
 @pytest.mark.unit
-def test__pool_settings__static_pool_with_max_overflow__raises_error() -> None:
-    # Arrange & Act & Assert
-    with pytest.raises(ValidationError, match="max_overflow must be 0 for static pool"):
-        PoolSettings(kind="static", max_overflow=10)
+def test__pool_settings__static_pool_with_more_than_one_connection__raises_error() -> None:
+    # Arrange & Act & Assert: StaticPool holds exactly one connection; size=50 would not mean 50
+    with pytest.raises(ValidationError, match=r"size must be 1 for a static pool.*async_adapted_queue"):
+        PoolSettings(kind="static", size=50, max_overflow=0)
 
 
 @pytest.mark.unit
-def test__pool_settings__static_pool_with_zero_overflow__succeeds() -> None:
-    # Arrange & Act
-    settings = PoolSettings(kind="static", max_overflow=0)
+def test__pool_settings__static_pool_with_one_connection__succeeds() -> None:
+    # Arrange & Act: max_overflow does not apply to a static pool, so its default is fine
+    settings = PoolSettings(kind="static", size=1)
 
     # Assert
     assert settings.kind == "static"
-    assert settings.max_overflow == 0
+    assert settings.size == 1
 
 
 @pytest.mark.unit

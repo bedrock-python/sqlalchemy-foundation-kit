@@ -691,6 +691,80 @@ def test__async_session_manager__init__resolves_poolclass() -> None:
     mock_resolve.assert_called_once_with("queue")
 
 
+_UNREACHABLE_URL = "postgresql+asyncpg://user:secret@localhost:5432/app"  # building an engine does not connect
+
+
+@pytest.mark.parametrize(
+    ("kind", "size", "pool_class_name"),
+    [
+        ("async_adapted_queue", 10, "AsyncAdaptedQueuePool"),
+        ("fallback_async_adapted_queue", 10, "FallbackAsyncAdaptedQueuePool"),
+        ("null", 10, "NullPool"),
+        ("static", 1, "StaticPool"),
+    ],
+)
+async def test__async_session_manager__init__every_pool_kind_with_pool_settings__builds_the_engine(
+    kind: str,
+    size: int,
+    pool_class_name: str,
+) -> None:
+    # Arrange
+    pytest.importorskip("pydantic_settings")
+    from sqlalchemy_foundation_kit.contrib.settings import PoolSettings
+
+    # Act
+    manager = AsyncSessionManager(
+        _UNREACHABLE_URL,
+        poolclass=kind,
+        pool_settings=PoolSettings(kind=kind, size=size, max_overflow=0),  # type: ignore[arg-type]
+    )
+
+    # Assert
+    assert type(manager.engine.pool).__name__ == pool_class_name
+    await manager.aclose()
+
+
+async def test__async_session_manager__init__pool_settings_without_poolclass__uses_their_kind() -> None:
+    # Arrange
+    pytest.importorskip("pydantic_settings")
+    from sqlalchemy_foundation_kit.contrib.settings import PoolSettings
+
+    # Act
+    manager = AsyncSessionManager(_UNREACHABLE_URL, pool_settings=PoolSettings(size=7, max_overflow=3))
+
+    # Assert
+    pool = manager.engine.pool
+    assert type(pool).__name__ == "AsyncAdaptedQueuePool"
+    assert pool.size() == 7  # type: ignore[attr-defined]
+    await manager.aclose()
+
+
+async def test__async_session_manager__init__no_poolclass_and_no_pool_settings__does_not_pool() -> None:
+    # Act
+    manager = AsyncSessionManager(_UNREACHABLE_URL)
+
+    # Assert
+    assert type(manager.engine.pool).__name__ == "NullPool"
+    await manager.aclose()
+
+
+async def test__async_session_manager__init__static_pool_with_metrics__builds_the_instrumented_engine() -> None:
+    # Arrange
+    pytest.importorskip("pydantic_settings")
+    from sqlalchemy_foundation_kit.contrib.settings import PoolSettings
+
+    # Act
+    manager = AsyncSessionManager(
+        _UNREACHABLE_URL,
+        pool_settings=PoolSettings(kind="static", size=1),
+        metrics=_WaitRecorder(),  # type: ignore[arg-type]
+    )
+
+    # Assert
+    assert type(manager.engine.pool).__name__ == "InstrumentedStaticPool"
+    await manager.aclose()
+
+
 def test__async_session_manager__init__builds_engine_kwargs() -> None:
     # Arrange & Act
     with patch("sqlalchemy_foundation_kit.session.manager.create_async_engine"):

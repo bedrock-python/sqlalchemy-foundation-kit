@@ -32,7 +32,7 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
         Basic usage:
             >>> manager = (
             ...     AsyncSessionManagerBuilder("postgresql+asyncpg://...")
-            ...     .with_pool("queue")
+            ...     .with_pool("async_adapted_queue")
             ...     .with_echo(True)
             ...     .build()
             ... )
@@ -41,7 +41,7 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
             >>> manager = (
             ...     AsyncSessionManagerBuilder[CustomSession]("postgresql+asyncpg://...")
             ...     .with_session_class(CustomSession)
-            ...     .with_pool("queue", pool_settings=settings.pool)
+            ...     .with_pool("async_adapted_queue", pool_settings=settings.pool)
             ...     .with_metrics(metrics)
             ...     .with_callbacks(on_engine_created=instrument_engine)
             ...     .with_json_serialization(orjson=True)
@@ -52,7 +52,7 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
         Reusable configuration:
             >>> builder = (
             ...     AsyncSessionManagerBuilder("postgresql+asyncpg://...")
-            ...     .with_pool("queue")
+            ...     .with_pool("async_adapted_queue")
             ...     .with_metrics(metrics)
             ... )
             >>> manager1 = builder.with_echo(True).build()
@@ -100,8 +100,10 @@ class AsyncSessionManagerBuilder(Generic[SessionT]):
         """Configure connection pool.
 
         Args:
-            poolclass: Pool class name or type (e.g., "queue", "null").
-            pool_settings: Optional pool configuration settings.
+            poolclass: Pool class name or type: ``"async_adapted_queue"`` for a service,
+                ``"null"`` (the default when this is not called) for tests and scripts.
+            pool_settings: Optional pool configuration settings. ``size``,
+                ``max_overflow`` and ``timeout`` apply to the queue pools only.
 
         Returns:
             Self for method chaining.

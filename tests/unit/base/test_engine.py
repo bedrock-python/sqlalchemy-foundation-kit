@@ -342,6 +342,53 @@ def test__build_engine_kwargs__pool_settings__applies_config() -> None:
     assert kwargs["pool_timeout"] == 30.0
 
 
+@pytest.mark.parametrize("poolclass", [NullPool, StaticPool])
+def test__build_engine_kwargs__pool_settings_for_a_pool_without_a_queue__passes_only_what_it_accepts(
+    poolclass: type,
+) -> None:
+    # Arrange
+    pool_settings = Mock(pre_ping=True, size=10, max_overflow=0, recycle=1800, timeout=30.0)
+
+    # Act
+    kwargs = build_engine_kwargs(
+        echo=False,
+        poolclass=poolclass,
+        isolation_level=None,
+        pool_settings=pool_settings,
+        connect_args=None,
+        extra_kwargs={},
+    )
+
+    # Assert: create_async_engine rejects pool_size/max_overflow/pool_timeout for these pools
+    assert "pool_size" not in kwargs
+    assert "max_overflow" not in kwargs
+    assert "pool_timeout" not in kwargs
+    assert kwargs["pool_recycle"] == 1800
+    assert kwargs["pool_pre_ping"] is True
+
+
+@pytest.mark.parametrize("poolclass", [AsyncAdaptedQueuePool, FallbackAsyncAdaptedQueuePool])
+def test__build_engine_kwargs__pool_settings_for_an_async_queue_pool__passes_every_setting(poolclass: type) -> None:
+    # Arrange
+    pool_settings = Mock(pre_ping=True, size=10, max_overflow=0, recycle=1800, timeout=30.0)
+
+    # Act
+    kwargs = build_engine_kwargs(
+        echo=False,
+        poolclass=poolclass,
+        isolation_level=None,
+        pool_settings=pool_settings,
+        connect_args=None,
+        extra_kwargs={},
+    )
+
+    # Assert
+    assert kwargs["pool_size"] == 10
+    assert kwargs["max_overflow"] == 0
+    assert kwargs["pool_timeout"] == 30.0
+    assert kwargs["pool_recycle"] == 1800
+
+
 def test__build_engine_kwargs__pool_settings_none_values__skips_none() -> None:
     # Arrange
     pool_settings = Mock()
