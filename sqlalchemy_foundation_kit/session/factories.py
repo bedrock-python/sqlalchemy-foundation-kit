@@ -44,8 +44,11 @@ def create_async_session_manager(
         metrics: Optional metrics collector for connection pool monitoring.
         on_engine_created: Optional callback invoked with the AsyncEngine right after creation.
             Use it to attach OpenTelemetry instrumentation, custom listeners, etc.
-        connection_class: Custom asyncpg Connection subclass. Defaults to ``AsyncCConnection``
-            which provides pgbouncer transaction-mode compatibility.
+        connection_class: Custom asyncpg Connection subclass. Defaults to ``AsyncCConnection``,
+            which names statements with a uuid. PgBouncer compatibility does not depend on
+            it: with ``statement_cache_size=0`` (the default) asyncpg sends unnamed
+            statements that any PgBouncer carries, and ``statement_cache_size > 0`` needs
+            PgBouncer 1.21+ with ``max_prepared_statements > 0`` whatever the class.
         extra_server_settings: Additional PostgreSQL ``server_settings`` to merge with defaults
             (e.g., ``{"statement_timeout": "30000", "timezone": "UTC"}``). User-provided keys
             override library defaults. These are startup parameters: through PgBouncer only
