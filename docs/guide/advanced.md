@@ -52,6 +52,31 @@ async with uow.transaction() as tx:
     # Auto-rollback on exception
 ```
 
+**A failed commit is the caller's to log.** When the flush or the commit fails, the
+transaction is rolled back and the exception reaches the caller unchanged. The library
+does not log it: the message of an `IntegrityError` holds the statement's parameters and
+PostgreSQL's `DETAIL: Key (email)=(...)` line, which are row values. Log what you need
+where you handle it, at a level you choose:
+
+```python
+from sqlalchemy.exc import IntegrityError
+
+try:
+    async with uow.transaction() as tx:
+        await tx.users.create(email=email)
+except IntegrityError as exc:
+    cause = exc.orig.__cause__  # the asyncpg exception
+    logger.warning(
+        "user insert rejected",
+        extra={"sqlstate": exc.orig.sqlstate, "constraint": getattr(cause, "constraint_name", None)},
+    )
+    raise
+```
+
+`str(exc)` has the full text, DETAIL and parameters included, when you are debugging
+locally. `create_async_engine(..., hide_parameters=True)` removes the parameters from it,
+not the DETAIL line.
+
 ### Isolation Levels
 
 Control transaction isolation for consistency vs. performance tradeoffs:

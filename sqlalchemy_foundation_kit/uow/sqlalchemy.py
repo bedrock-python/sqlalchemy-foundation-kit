@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Generic
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .._typing import T
 from ..session.locks import try_advisory_xact_lock
 from .enums import IsolationLevel
 from .protocols import AsyncUnitOfWork, AsyncUowTransaction
-
-logger = logging.getLogger(__name__)
 
 # Cache valid isolation levels for performance (avoid recreating set on each call)
 _VALID_ISOLATION_LEVELS: frozenset[str] = frozenset(item.value for item in IsolationLevel)
@@ -314,9 +310,11 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
             isolation_level: Optional transaction isolation level.
                 Can be an IsolationLevel enum member or a string value.
                 Supported values: "READ_COMMITTED", "REPEATABLE_READ", "SERIALIZABLE", "READ_UNCOMMITTED".
-            flush_before_commit: If True, flush the session before commit to surface
-                constraint violations while still inside the transaction. If ``None`` (default),
-                falls back to the value passed to the constructor (``True`` unless overridden).
+            flush_before_commit: If True, flush the session explicitly before the commit.
+                The commit flushes as well, so a constraint violation raises the same
+                exception through the same rollback either way, as the block exits. If
+                ``None`` (default), falls back to the value passed to the constructor
+                (``True`` unless overridden).
 
         Raises:
             ValueError: If isolation_level is not supported.
@@ -334,13 +332,10 @@ class AsyncSQLAlchemyUnitOfWork(AsyncUnitOfWork[T], Generic[T]):
             uow = self._transaction_factory(session)
             yield uow
             if flush_before_commit:
-                # Flush changes before commit to catch constraint violations early
-                # while still inside the transaction context.
-                try:
-                    await session.flush()
-                except SQLAlchemyError as e:
-                    logger.warning("Database flush failed", extra={"error": str(e)})
-                    raise
+                # A failure propagates to the caller as is, and is not logged here: its
+                # message carries the statement's parameters and PostgreSQL's DETAIL line,
+                # which holds the conflicting row's values.
+                await session.flush()
 
     @asynccontextmanager
     async def managed_session(
