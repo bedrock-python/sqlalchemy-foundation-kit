@@ -323,7 +323,7 @@ With the `settings` extra, `sqlalchemy_foundation_kit.contrib.settings` implemen
 | `ConnectionSettings` | `host="localhost"`, `port=5432` (1–65535), `user="postgres"`, `password: SecretStr` **required**, `database: str` **required** |
 | `PoolSettings` | `kind="async_adapted_queue"`, `size=10`, `max_overflow=20`, `pre_ping=True`, `recycle=3600`, `timeout=30.0`. `kind="static"` with `size > 1` raises: `StaticPool` is one shared connection, for tests. A fixed-size pool is `async_adapted_queue` with `max_overflow=0`. `size` / `max_overflow` / `timeout` reach queue pools only |
 | `QuerySettings` | `echo=False`, `statement_cache_size=0`, `prepared_statement_cache_size=0`, `isolation_level=None` |
-| `BasePostgresConfig` | `connection` **required**, `pool`, `query`, `application_name: str` **required**, `db_schema=None`, `use_orjson_serialization=True`, `jit=None`, `metrics_enabled=False`. `to_dsn(driver="asyncpg", mask_password=False)`; `__repr__` prints the masked DSN. `db_schema` is a `search_path` value applied per transaction (rule 16); `jit` is a startup parameter and is sent only when set |
+| `BasePostgresConfig` | `connection` **required**, `pool`, `query`, `application_name: str` **required**, `db_schema=None`, `use_orjson_serialization=False`, `jit=None`, `metrics_enabled=False`. `to_dsn(driver="asyncpg", mask_password=False)`; `__repr__` prints the masked DSN. `db_schema` is a `search_path` value applied per transaction (rule 16); `jit` is a startup parameter and is sent only when set |
 | `BasePostgresMigrationsConfig` | `postgres: BasePostgresConfig`, with `env_nested_delimiter="__"` and `extra="ignore"` |
 
 `BasePostgresConfig` declares no `model_config` of its own, so it reads environment
@@ -434,7 +434,8 @@ decorator.
 13. **Extras are not optional where you use them.** `contrib.settings` needs `[settings]`,
     `contrib.metrics` needs `[metrics]`, `contrib.telemetry` needs `[telemetry]`,
     `contrib.di` needs `[dishka]`, `contrib.dependency_injector` needs
-    `[dependency-injector]`, and `use_orjson=True` needs `[orjson]`. The DI packages fail
+    `[dependency-injector]`, and `use_orjson=True` / `use_orjson_serialization=True` need
+    `[orjson]` — both are off by default, so `[settings]` alone runs. The DI packages fail
     on *import* without their extra, with an `ImportError` naming the extra to install.
 14. **Metrics never raise into your code.** Every recorder call is wrapped: a broken
     metrics backend is logged at exception level and discarded, and the query proceeds.
@@ -489,6 +490,7 @@ is what to do on the version the row names.
 | `postgres_db_connection_timeouts_total` (0.4.0) | counted asyncpg statement timeouts — a slow query, on a healthy connection — and missed connect timeouts, which never reach `handle_error`. A database refusing connections moved no series at all | alert on `connection_errors_total{error_type="TimeoutError"}` for slow statements, and on the checkout wait for connections |
 | `uow.transaction()` with a failing flush (0.4.0 and earlier, `flush_before_commit=True`, the default) | logged `str(exc)` at WARNING as `extra={"error": ...}` before re-raising: the statement's parameters and PostgreSQL's `DETAIL: Key (...)=(...)` row values went to the logs, and `hide_parameters=True` removed only the parameters | `flush_before_commit=False`; the same exception still reaches the caller |
 | `uow.query()` (0.4.0 and earlier) | documented as read-only and transaction-free, but ran an ordinary autobegun transaction: a write followed by `qx.session.commit()` was persisted, and without the commit it was rolled back silently | do reads in `query()` and every write in `transaction()` |
+| `create_async_session_manager(BasePostgresConfig(...))` with `[settings]` only (0.4.0 and earlier) | `ImportError: orjson is required` before connecting: `use_orjson_serialization` defaulted to `True` while orjson ships only with `[orjson]` / `[all]` | `use_orjson_serialization=False`, or install `[orjson]` |
 | `postgres_db_connection_checkout_duration_seconds` (0.3.0 and earlier) | the only checkout histogram there was, and it measures the time between the `checkout` and `checkin` events — how long a connection was *held*, which is query duration seen from the pool. The time a caller waited for a connection, which is what the name suggests and what predicts a pool outage, was not exposed at all | none; the wait was not measurable from outside the pool |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,

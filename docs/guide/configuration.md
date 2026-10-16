@@ -283,7 +283,7 @@ QuerySettings(
 |-----------|------|---------|-------------|
 | `application_name` | `str` | **required** | Application identifier in PostgreSQL logs |
 | `db_schema` | `str \| None` | `None` | `search_path` applied to every transaction with `SET LOCAL` — a schema, or a comma-separated list |
-| `use_orjson_serialization` | `bool` | `True` | Use `orjson` for JSON serialization (requires `[orjson]` extra) |
+| `use_orjson_serialization` | `bool` | `False` | Use `orjson` for JSON serialization (requires `[orjson]` extra) |
 | `jit` | `"off" \| "on" \| None` | `None` | PostgreSQL JIT setting, sent as a startup parameter only when set |
 | `metrics_enabled` | `bool` | `False` | Enable Prometheus metrics (requires `[metrics]` extra) |
 
@@ -335,7 +335,7 @@ search_path="tenant_123")` or `AsyncSessionManagerBuilder(url).with_search_path(
 
 **orjson Serialization:**
 
-Install with `[orjson]` for faster JSON serialization:
+Off by default. Install `[orjson]` and turn it on for faster JSON serialization:
 
 ```bash
 pip install sqlalchemy-foundation-kit[orjson]
@@ -348,7 +348,10 @@ BasePostgresConfig(
 )
 ```
 
-Automatically used by `PydanticJSONB` type for better performance.
+It becomes the engine's JSON serializer, so every `JSON` / `JSONB` column uses it,
+`PydanticJSONB` included. orjson also serializes values `json.dumps` rejects — `datetime`,
+`UUID`, `Decimal`, non-`str` keys — so a service that turns it off again has to keep its
+JSON columns to plain JSON types. Up to 0.4.0 it was on by default.
 
 **JIT (Just-In-Time Compilation):**
 
@@ -412,7 +415,7 @@ class MyPostgresConfig:
     query: QuerySettingsProtocol
     application_name: str = "my-service"
     db_schema: str | None = None
-    use_orjson_serialization: bool = True
+    use_orjson_serialization: bool = False
     jit: str | None = None
     metrics_enabled: bool = False
     
