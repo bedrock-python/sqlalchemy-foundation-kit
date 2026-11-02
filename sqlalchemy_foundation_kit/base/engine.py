@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Literal
 
+import sqlalchemy.pool
 from sqlalchemy.pool import (
     AsyncAdaptedQueuePool,
-    FallbackAsyncAdaptedQueuePool,
     NullPool,
     QueuePool,
     SingletonThreadPool,
@@ -52,7 +52,6 @@ class PoolRegistry:
         "queue": QueuePool,
         "singleton_thread": SingletonThreadPool,
         "async_adapted_queue": AsyncAdaptedQueuePool,
-        "fallback_async_adapted_queue": FallbackAsyncAdaptedQueuePool,
         "static": StaticPool,
     }
 
@@ -111,9 +110,15 @@ class PoolRegistry:
 
         Examples:
             >>> PoolRegistry.list_available()
-            ['async_adapted_queue', 'fallback_async_adapted_queue', 'null', 'queue', ...]
+            ['async_adapted_queue', 'null', 'queue', ...]
         """
         return sorted(cls._pools.keys())
+
+
+# SQLAlchemy 2.1 removed this pool together with the async_fallback mode it served,
+# so it is a built-in only where SQLAlchemy still has it (2.0).
+if (_fallback_pool := getattr(sqlalchemy.pool, "FallbackAsyncAdaptedQueuePool", None)) is not None:
+    PoolRegistry.register("fallback_async_adapted_queue", _fallback_pool)
 
 
 def resolve_pool_class(poolclass: PoolClassStr | str | type) -> type:

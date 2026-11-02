@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from unittest.mock import Mock, patch
 
 import pytest
+import sqlalchemy.pool
 from sqlalchemy.pool import (
     AsyncAdaptedQueuePool,
-    FallbackAsyncAdaptedQueuePool,
     NullPool,
     QueuePool,
     SingletonThreadPool,
@@ -20,6 +22,27 @@ from sqlalchemy_foundation_kit.base.engine import (
     register_pool_class,
     resolve_pool_class,
 )
+
+# SQLAlchemy 2.1 removed FallbackAsyncAdaptedQueuePool together with the async_fallback mode.
+FALLBACK_POOL = getattr(sqlalchemy.pool, "FallbackAsyncAdaptedQueuePool", None)
+requires_fallback_pool = pytest.mark.skipif(
+    FALLBACK_POOL is None, reason="SQLAlchemy 2.1 removed FallbackAsyncAdaptedQueuePool"
+)
+
+_IMPORT_WITHOUT_FALLBACK_POOL = """
+import sqlalchemy.pool
+
+# What SQLAlchemy 2.1 looks like to the kit: the pool is gone from sqlalchemy.pool.
+vars(sqlalchemy.pool).pop("FallbackAsyncAdaptedQueuePool", None)
+
+from sqlalchemy_foundation_kit.base.engine import PoolRegistry
+
+print(",".join(PoolRegistry.list_available()))
+try:
+    PoolRegistry.resolve("fallback_async_adapted_queue")
+except ValueError as exc:
+    print(type(exc).__name__)
+"""
 
 # ============================================================================
 # PoolRegistry.resolve Tests
@@ -58,12 +81,29 @@ def test__pool_registry_resolve__async_adapted_queue__returns_class() -> None:
     assert pool_class == AsyncAdaptedQueuePool
 
 
+@requires_fallback_pool
 def test__pool_registry_resolve__fallback_async_adapted__returns_class() -> None:
     # Arrange & Act
     pool_class = PoolRegistry.resolve("fallback_async_adapted_queue")
 
     # Assert
-    assert pool_class == FallbackAsyncAdaptedQueuePool
+    assert pool_class == FALLBACK_POOL
+
+
+def test__engine_import__sqlalchemy_without_the_fallback_pool__registers_the_other_pools() -> None:
+    # Arrange & Act: a fresh interpreter, because the failure happens at import time
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _IMPORT_WITHOUT_FALLBACK_POOL],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    # Assert
+    assert completed.returncode == 0, completed.stderr
+    pools, error = completed.stdout.split()
+    assert pools.split(",") == ["async_adapted_queue", "null", "queue", "singleton_thread", "static"]
+    assert error == "ValueError"
 
 
 def test__pool_registry_resolve__static__returns_class() -> None:
@@ -102,7 +142,7 @@ def test__pool_registry_list_available__returns_sorted_list() -> None:
 
     # Assert
     assert isinstance(available, list)
-    assert len(available) >= 6
+    assert len(available) >= 5
     assert available == sorted(available)
 
 
@@ -367,7 +407,13 @@ def test__build_engine_kwargs__pool_settings_for_a_pool_without_a_queue__passes_
     assert kwargs["pool_pre_ping"] is True
 
 
-@pytest.mark.parametrize("poolclass", [AsyncAdaptedQueuePool, FallbackAsyncAdaptedQueuePool])
+@pytest.mark.parametrize(
+    "poolclass",
+    [
+        AsyncAdaptedQueuePool,
+        pytest.param(FALLBACK_POOL, marks=requires_fallback_pool, id="FallbackAsyncAdaptedQueuePool"),
+    ],
+)
 def test__build_engine_kwargs__pool_settings_for_an_async_queue_pool__passes_every_setting(poolclass: type) -> None:
     # Arrange
     pool_settings = Mock(pre_ping=True, size=10, max_overflow=0, recycle=1800, timeout=30.0)

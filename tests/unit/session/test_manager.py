@@ -9,6 +9,7 @@ from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import sqlalchemy.pool
 from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.pool import QueuePool
@@ -884,7 +885,15 @@ _UNREACHABLE_URL = "postgresql+asyncpg://user:secret@localhost:5432/app"  # buil
     ("kind", "size", "pool_class_name"),
     [
         ("async_adapted_queue", 10, "AsyncAdaptedQueuePool"),
-        ("fallback_async_adapted_queue", 10, "FallbackAsyncAdaptedQueuePool"),
+        pytest.param(
+            "fallback_async_adapted_queue",
+            10,
+            "FallbackAsyncAdaptedQueuePool",
+            marks=pytest.mark.skipif(
+                not hasattr(sqlalchemy.pool, "FallbackAsyncAdaptedQueuePool"),
+                reason="SQLAlchemy 2.1 removed FallbackAsyncAdaptedQueuePool",
+            ),
+        ),
         ("null", 10, "NullPool"),
         ("static", 1, "StaticPool"),
     ],
