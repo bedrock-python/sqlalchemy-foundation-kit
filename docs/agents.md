@@ -291,11 +291,13 @@ and the free function take `str | int`.
 ### Engine utilities
 
 `PoolRegistry` maps a name to a pool class: `null`, `queue`, `singleton_thread`,
-`async_adapted_queue`, `fallback_async_adapted_queue`, `static`. `PoolRegistry.register(name,
-cls, *, override=False)` (or `register_pool_class(...)`) adds one and raises `ValueError`
-on a duplicate without `override=True`; `resolve_pool_class(name_or_class)` resolves one
-and raises `ValueError` on an unknown name; `PoolRegistry.list_available()` lists them.
-`PoolClassStr` is the `Literal` of the six built-ins.
+`async_adapted_queue`, `static`, and on SQLAlchemy 2.0 also `fallback_async_adapted_queue`
+(SQLAlchemy 2.1 removed `FallbackAsyncAdaptedQueuePool`; resolving the name there raises
+`ValueError`). `PoolRegistry.register(name, cls, *, override=False)` (or
+`register_pool_class(...)`) adds one and raises `ValueError` on a duplicate without
+`override=True`; `resolve_pool_class(name_or_class)` resolves one and raises `ValueError`
+on an unknown name; `PoolRegistry.list_available()` lists them.
+`PoolClassStr` is the `Literal` of those six names.
 
 `build_engine_kwargs(echo, poolclass, isolation_level, pool_settings, connect_args,
 extra_kwargs, use_orjson=False)` assembles the `create_async_engine` keywords: it always
