@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.5.0...sqlalchemy-foundation-kit-v0.5.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* import on SQLAlchemy 2.1, which removed FallbackAsyncAdaptedQueuePool ([#79](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/79)) ([3fe20f2](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/3fe20f2febbe672789673c8e6bc4fe47862e3057)), closes [#78](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/78)
+
 ## [0.5.0](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.4.0...sqlalchemy-foundation-kit-v0.5.0) (2026-10-16)
 
 
