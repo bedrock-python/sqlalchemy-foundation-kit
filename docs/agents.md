@@ -342,9 +342,9 @@ variables only through the parent `BaseSettings` that holds it. Under
 | `contrib.telemetry.instrument_sqlalchemy(engine=None, **kw)` | `telemetry` | `SQLAlchemyInstrumentor().instrument(...)`; `engine=None` means every engine |
 | `contrib.telemetry.instrument_asyncpg(**kw)` | `telemetry` | `AsyncPGInstrumentor().instrument(...)` |
 | `contrib.telemetry.TracedAsyncUnitOfWork` | `telemetry` | the traced unit of work described above |
-| `contrib.di.AsyncDatabaseProvider(healthcheck_query="SELECT 1", retry_config=DEFAULT_RETRY_CONFIG)` | `dishka` | APP-scoped `AsyncSessionManager` and `async_sessionmaker`; runs the healthcheck at startup and `aclose()` at shutdown. Override `create_session_manager` to customise |
+| `contrib.di.AsyncDatabaseProvider(healthcheck_query="SELECT 1", retry_config=DEFAULT_RETRY_CONFIG)` | `dishka` | APP-scoped `AsyncSessionManager` and `async_sessionmaker`; runs the healthcheck at startup and `aclose()` at shutdown. Override `create_session_manager` to customise. Asks for `PostgresSettingsProtocol` and `PostgresMetricsProtocol | None`; provide the second even without metrics (`None`), or the container fails with `GraphMissingFactoryError` |
 | `contrib.di.AsyncUnitOfWorkProvider()` | `dishka` | APP-scoped `AsyncUnitOfWork[AsyncSQLAlchemyUowTransaction]`. Override `create_uow` to use your transaction class |
-| `contrib.di.PrometheusPostgresMetricsProvider()` | `dishka` + `metrics` | a `PostgresMetricsProtocol`, or `None` unless `postgres.metrics_enabled` |
+| `contrib.di.PrometheusPostgresMetricsProvider()` | `dishka` + `metrics` | a `PostgresMetricsProtocol`, or `None` unless `postgres.metrics_enabled`. Asks for `PrometheusMetricsSettingsProtocol`, `str | None` (the metric prefix) and `PostgresMetricsSettingsProtocol | None` |
 | `contrib.dependency_injector.DatabaseContainer` | `dependency-injector` | `session_manager` (resource), `session_maker`, `uow`; configured with `postgres_config`, `metrics`, `healthcheck_query`, `retry_config` |
 | `contrib.dependency_injector.AsyncDatabaseResourceProvider(config, metrics=None, ...)` | `dependency-injector` | `await .start()` / `await .stop()` for a lifecycle you drive yourself |
 | `contrib.dependency_injector.PrometheusMetricsContainer` | `dependency-injector` + `metrics` | `postgres_metrics` from `metrics_settings`, `default_prefix`, `postgres_settings` |

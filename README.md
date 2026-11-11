@@ -270,7 +270,8 @@ container = make_async_container(
     AsyncDatabaseProvider(),
     AsyncUnitOfWorkProvider(),
     PrometheusPostgresMetricsProvider(),
-    # ... your providers
+    # ... your providers, which provide the settings these ask for:
+    # see "Dependency Injection" in the advanced guide
 )
 ```
 
