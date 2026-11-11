@@ -496,61 +496,139 @@ pip install sqlalchemy-foundation-kit[dishka]
 ```
 
 ```python
-from dishka import make_async_container, Scope
+from dishka import Provider, Scope, make_async_container, provide
+from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from sqlalchemy_foundation_kit import (
+    AsyncSQLAlchemyUowTransaction,
+    AsyncUnitOfWork,
+    PostgresSettingsProtocol,
+)
 from sqlalchemy_foundation_kit.contrib.di import (
     AsyncDatabaseProvider,
     AsyncUnitOfWorkProvider,
     PrometheusPostgresMetricsProvider,
 )
+from sqlalchemy_foundation_kit.contrib.di.metrics import (
+    PostgresMetricsSettingsProtocol,
+    PrometheusMetricsSettingsProtocol,
+)
+from sqlalchemy_foundation_kit.contrib.settings import BasePostgresConfig
 
-# Define your providers
-from dishka import Provider, provide
+from myapp.models import UserDB
+
+
+class MetricsSettings(BaseModel):
+    prefix: str | None = None
+    enabled: bool = True
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_nested_delimiter="__")
+
+    service_name: str = "users"
+    postgres: BasePostgresConfig          # POSTGRES__CONNECTION__HOST, POSTGRES__APPLICATION_NAME, ...
+    metrics: MetricsSettings = MetricsSettings()
+
 
 class SettingsProvider(Provider):
+    """Hands the kit's providers the settings they ask for, by the types they ask for."""
+
     scope = Scope.APP
-    
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__()
+        self._settings = settings
+
     @provide
-    def get_settings(self) -> Settings:
-        return Settings()
+    def postgres(self) -> PostgresSettingsProtocol:                         # AsyncDatabaseProvider
+        return self._settings.postgres
+
+    @provide
+    def metrics(self) -> PrometheusMetricsSettingsProtocol:                 # PrometheusPostgresMetricsProvider
+        return self._settings.metrics
+
+    @provide
+    def metrics_prefix(self) -> str | None:                                 # PrometheusPostgresMetricsProvider
+        return self._settings.service_name
+
+    @provide
+    def postgres_metrics_settings(self) -> PostgresMetricsSettingsProtocol | None:   # its metrics_enabled
+        return self._settings.postgres
+
+
+class CreateUserUseCase:
+    def __init__(self, uow: AsyncUnitOfWork[AsyncSQLAlchemyUowTransaction]) -> None:
+        self._uow = uow
+
+    async def execute(self, email: str) -> None:
+        async with self._uow.transaction() as tx:
+            tx.session.add(UserDB(email=email))
+
 
 class UseCaseProvider(Provider):
     scope = Scope.REQUEST
-    
-    @provide
-    def get_create_user_use_case(
-        self,
-        uow: MyUnitOfWork,
-    ) -> CreateUserUseCase:
-        return CreateUserUseCase(uow)
 
-# Create container
+    create_user = provide(CreateUserUseCase)
+
+
 container = make_async_container(
-    # Settings
-    SettingsProvider(),
-    
-    # Database infrastructure
-    AsyncDatabaseProvider(),  # Provides AsyncSessionManager, async_sessionmaker
-    AsyncUnitOfWorkProvider(),  # Provides AsyncUnitOfWork
-    PrometheusPostgresMetricsProvider(),  # Provides PostgresMetrics
-    
-    # Application layer
+    SettingsProvider(Settings()),
+    AsyncDatabaseProvider(),               # AsyncSessionManager, async_sessionmaker
+    AsyncUnitOfWorkProvider(),             # AsyncUnitOfWork[AsyncSQLAlchemyUowTransaction]
+    PrometheusPostgresMetricsProvider(),   # PostgresMetricsProtocol | None
     UseCaseProvider(),
 )
 
 # Use in FastAPI
-from dishka.integrations.fastapi import setup_dishka
+from dishka import FromDishka
+from dishka.integrations.fastapi import DishkaRoute, setup_dishka
+from fastapi import APIRouter, FastAPI
+
+router = APIRouter(route_class=DishkaRoute)
+
+
+@router.post("/users")
+async def create_user(email: str, use_case: FromDishka[CreateUserUseCase]) -> None:
+    await use_case.execute(email)
+
 
 app = FastAPI()
+app.include_router(router)
 setup_dishka(container, app)
-
-@app.post("/users")
-async def create_user(
-    use_case: FromDishka[CreateUserUseCase],
-    body: CreateUserRequest,
-):
-    user = await use_case.execute(body.email, body.username)
-    return {"user_id": str(user.id)}
 ```
+
+dishka matches every dependency by its exact type, so the container must provide each
+type the kit's providers ask for:
+
+| Provider | Asks for |
+|---|---|
+| `AsyncDatabaseProvider` | `PostgresSettingsProtocol` and `PostgresMetricsProtocol | None` |
+| `AsyncUnitOfWorkProvider` | `async_sessionmaker[AsyncSession]` (from `AsyncDatabaseProvider`) |
+| `PrometheusPostgresMetricsProvider` | `PrometheusMetricsSettingsProtocol`, `str | None` (the metric prefix) and `PostgresMetricsSettingsProtocol | None` |
+
+`PostgresMetricsProtocol | None` is required even without metrics: the default of `None`
+in the provider's signature is not something dishka reads, and a container without it
+fails with `GraphMissingFactoryError`. Without Prometheus, drop
+`PrometheusPostgresMetricsProvider` and its three settings, and provide the `None`
+yourself:
+
+```python
+from sqlalchemy_foundation_kit import PostgresMetricsProtocol
+
+
+class SettingsProvider(Provider):
+    ...
+
+    @provide
+    def postgres_metrics(self) -> PostgresMetricsProtocol | None:
+        return None
+```
+
+To use your own transaction class, subclass `AsyncUnitOfWorkProvider` and override
+`create_uow`; the container still provides it as
+`AsyncUnitOfWork[AsyncSQLAlchemyUowTransaction]`.
 
 ### dependency-injector
 
