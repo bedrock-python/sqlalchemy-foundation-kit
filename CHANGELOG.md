@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.5.1...sqlalchemy-foundation-kit-v0.5.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* default created_at and updated_at to now() so a non-UTC session does not shift them ([#89](https://github.com/bedrock-python/sqlalchemy-foundation-kit/issues/89)) ([5b1493d](https://github.com/bedrock-python/sqlalchemy-foundation-kit/commit/5b1493d61a0b2b5ad5b64847ffdeeaf28cf58289))
+
 ## [0.5.1](https://github.com/bedrock-python/sqlalchemy-foundation-kit/compare/sqlalchemy-foundation-kit-v0.5.0...sqlalchemy-foundation-kit-v0.5.1) (2026-11-02)
 
 
