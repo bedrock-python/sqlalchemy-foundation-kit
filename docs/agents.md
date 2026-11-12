@@ -281,7 +281,7 @@ and the free function take `str | int`.
 |---|---|
 | `Base` | `DeclarativeBase` with `MetaData(naming_convention=DB_NAMING_CONVENTION)` and a `type_annotation_map` mapping `uuid.UUID` to `postgresql.UUID()` and `datetime.datetime` to `TIMESTAMP(timezone=True)` |
 | `BaseTable` | `Base`, `__abstract__`, plus a `__repr__` printing every column |
-| `DatetimeColumnsMixin` | `created_at` / `updated_at`, both `server_default=timezone('UTC', now())`, `updated_at` also `onupdate`. Index them with the class variables `__created_at_index__` / `__updated_at_index__`, both `False` by default |
+| `DatetimeColumnsMixin` | `created_at` / `updated_at`, both `server_default=now()`, `updated_at` also `onupdate=now()`, so both hold the instant of the write in any session time zone. Index them with the class variables `__created_at_index__` / `__updated_at_index__`, both `False` by default |
 | `DB_NAMING_CONVENTION` | `ix` `%(column_0_label)s_idx`, `uq` `%(table_name)s_%(column_0_name)s_key`, `ck` `%(table_name)s_%(constraint_name)s_check`, `fk` `%(table_name)s_%(column_0_name)s_fkey`, `pk` `%(table_name)s_pkey` |
 | `PydanticJSONB(model_type)` | `TypeDecorator` over `JSONB`. Validates on write and on read; `model_type` is required. A row that no longer validates is logged and returned raw, not raised |
 | `GenericJSONDict` | `dict[str, Any]`, for a JSONB column that needs no validation |
@@ -477,8 +477,9 @@ decorator.
 ### Fixed since 0.2.0
 
 Three published entry points raise before they reach the database on 0.2.0; on 0.2.1 the
-PgBouncer-safe defaults cannot connect through PgBouncer; and up to 0.4.0 the pool metrics
-do not say what their names say. All are right on current versions; the workaround column
+PgBouncer-safe defaults cannot connect through PgBouncer; up to 0.4.0 the pool metrics
+do not say what their names say; and up to 0.5.1 the `DatetimeColumnsMixin` timestamps are
+shifted by the session time zone. All are right on current versions; the workaround column
 is what to do on the version the row names.
 
 | Call | What it does on that version | Workaround there |
@@ -493,6 +494,7 @@ is what to do on the version the row names.
 | `uow.transaction()` with a failing flush (0.4.0 and earlier, `flush_before_commit=True`, the default) | logged `str(exc)` at WARNING as `extra={"error": ...}` before re-raising: the statement's parameters and PostgreSQL's `DETAIL: Key (...)=(...)` row values went to the logs, and `hide_parameters=True` removed only the parameters | `flush_before_commit=False`; the same exception still reaches the caller |
 | `uow.query()` (0.4.0 and earlier) | documented as read-only and transaction-free, but ran an ordinary autobegun transaction: a write followed by `qx.session.commit()` was persisted, and without the commit it was rolled back silently | do reads in `query()` and every write in `transaction()` |
 | `create_async_session_manager(BasePostgresConfig(...))` with `[settings]` only (0.4.0 and earlier) | `ImportError: orjson is required` before connecting: `use_orjson_serialization` defaulted to `True` while orjson ships only with `[orjson]` / `[all]` | `use_orjson_serialization=False`, or install `[orjson]` |
+| `DatetimeColumnsMixin` with a session `TimeZone` other than UTC (0.5.1 and earlier) | `created_at` and `updated_at` were off by the zone's UTC offset, 3 hours in the past with `Europe/Moscow`. The default was `timezone('UTC', now())`, a `timestamp` without zone, which the session reads as local time when it is cast into the `timestamptz` column | set the session `TimeZone` to UTC (`extra_server_settings={"timezone": "UTC"}` or `ALTER ROLE ... SET timezone = 'UTC'`). After the upgrade `onupdate` is right at once, but a table created on these versions keeps its old column default until a migration sets it to `now()`, written by hand because autogenerate compares the two defaults on the server and a UTC session finds them equal (see the quick start). Rows written before stay shifted |
 | `postgres_db_connection_checkout_duration_seconds` (0.3.0 and earlier) | the only checkout histogram there was, and it measures the time between the `checkout` and `checkin` events — how long a connection was *held*, which is query duration seen from the pool. The time a caller waited for a connection, which is what the name suggests and what predicts a pool outage, was not exposed at all | none; the wait was not measurable from outside the pool |
 
 `IsolationLevel` itself was always fine — `READ_UNCOMMITTED`, `READ_COMMITTED`,

@@ -186,7 +186,7 @@ def test__datetime_mixin__has_created_at__default_no_index() -> None:
 
     # Assert
     assert created_at_col is not None
-    assert created_at_col.server_default is not None
+    assert str(created_at_col.server_default.arg) == "now()"
     assert created_at_col.index is False
 
 
@@ -203,8 +203,8 @@ def test__datetime_mixin__has_updated_at__default_no_index() -> None:
 
     # Assert
     assert updated_at_col is not None
-    assert updated_at_col.server_default is not None
-    assert updated_at_col.onupdate is not None
+    assert str(updated_at_col.server_default.arg) == "now()"
+    assert str(updated_at_col.onupdate.arg) == "now()"
     assert updated_at_col.index is False
 
 

@@ -119,9 +119,26 @@ class UserDB(BaseTable, DatetimeColumnsMixin):
     is_active: Mapped[bool] = mapped_column(default=True)
 
 # DatetimeColumnsMixin provides:
-# - created_at: Mapped[datetime] (with server default)
-# - updated_at: Mapped[datetime] (auto-updated on changes)
+# - created_at: Mapped[datetime] (server default now())
+# - updated_at: Mapped[datetime] (server default now(), set to now() on every ORM update)
 ```
+
+`now()` is the start of the transaction as a `timestamptz`, the same instant whatever the
+session `TimeZone`. Up to 0.5.1 the default was `timezone('UTC', now())`, a `timestamp`
+without zone that a session in another zone read as its local time, so `created_at` and
+`updated_at` were off by the zone's UTC offset. The `onupdate` value comes from the model and
+is right once you upgrade, but a table created on 0.5.1 or earlier keeps its column default
+until a migration changes it:
+
+```python
+def upgrade() -> None:
+    for column in ("created_at", "updated_at"):
+        op.alter_column("users", column, server_default=sa.text("now()"))
+```
+
+Write it by hand: autogenerate does not find it even with `compare_server_default=True`,
+because Alembic compares the two defaults by evaluating them on the server, and in a UTC
+session they are equal. Rows written earlier from a session that was not on UTC stay shifted.
 
 ### 3. Create Session Manager
 

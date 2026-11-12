@@ -55,15 +55,15 @@ class DatetimeColumnsMixin:
     @declared_attr
     def created_at(self) -> Mapped[datetime.datetime]:
         return mapped_column(
-            server_default=func.timezone("UTC", func.now()),
+            server_default=func.now(),
             index=self.__created_at_index__,
         )
 
     @declared_attr
     def updated_at(self) -> Mapped[datetime.datetime]:
         return mapped_column(
-            server_default=func.timezone("UTC", func.now()),
-            onupdate=func.timezone("UTC", func.now()),
+            server_default=func.now(),
+            onupdate=func.now(),
             index=self.__updated_at_index__,
         )
 
